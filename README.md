@@ -50,6 +50,12 @@ python -m PyInstaller --onefile --windowed --icon=loudnorm_pro_icon.ico loudnorm
 
 This project is licensed under the GNU GPL v3.
 
+FFmpeg is not included. Make sure it is installed separately
+
+## ⚠️ First Start
+
+Make sure FFmpeg is installed and available in PATH.
+
 ## ⚠️ Note
 
 FFmpeg is not included. Make sure it is installed separately
