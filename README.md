@@ -46,6 +46,9 @@ This project is licensed under the GNU GPL v3.
 
 FFmpeg is not included. Make sure it is installed separately.
 
+Download latest version:
+https://github.com/urscaviezel/Loudnorm-PRO/releases
+
 ---
 
 Made with ❤️ for fast media workflows.
