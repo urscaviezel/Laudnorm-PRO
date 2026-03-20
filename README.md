@@ -1,62 +1,90 @@
-# Loudnorm PRO
-## ⬇️ Download
+# 🎧 Loudnorm PRO
 
-👉 https://github.com/urscaviezel/Loudnorm-PRO/releases
-
-![Release](https://img.shields.io/github/v/release/urscaviezel/Loudnorm-PRO)
-![License](https://img.shields.io/github/license/urscaviezel/Loudnorm-PRO)
-
-A fast and simple GUI for batch audio normalization using FFmpeg (loudnorm).
-
-## ✨ Features
-
-* Batch processing of video files
-* Automatic audio track detection (by language)
-* Loudness normalization (EBU R128 / ffmpeg loudnorm)
-* Hardware encoding support (NVENC)
-* Parallel processing
-* Audio bitrate presets
-* Video presets & CQ settings
-* German / English UI
-* Resume interrupted jobs
-
-## 🖥️ Screenshot
-
-![Screenshot](screenshot.png)
-
-## ⚙️ Requirements
-
-* Python 3.10+
-* FFmpeg & FFprobe in PATH
-
-* (Windows users can download the EXE from Releases; Python is only needed to run from source.)
-
-## 📦 Installation
-
-```bash
-git clone https://github.com/urscaviezel/Loudnorm-PRO.git
-cd loudnorm-pro
-pip install -r requirements.txt
-python loudnorm_gui.py
-```
-
-## 🏗️ Build EXE
-
-```bash
-python -m PyInstaller --onefile --windowed --icon=loudnorm_pro_icon.ico loudnorm_gui.py
-```
-
-## 📄 License
-
-This project is licensed under the GNU GPL v3.
-
-FFmpeg is not included. Make sure it is installed separately
-
-## ⚠️ Note First Start
-
-Make sure FFmpeg is installed and available in PATH
-FFmpeg is not included. Make sure it is installed separately
+**Batch Audio Normalization GUI for FFmpeg (loudnorm)**  
+Fast, simple and powerful tool for normalizing audio tracks in video files.
 
 ---
 
-Made with ❤️ for fast media workflows.
+## ✨ Features
+
+- 🎬 Batch processing for multiple video files
+- 🔊 Automatic audio normalization using FFmpeg `loudnorm`
+- 🌍 Multi-language support (German / English)
+- 🎚️ Audio codec & bitrate presets
+- 🎥 Video codec presets (COPY / NVENC)
+- ⚡ Parallel processing (multi-job support)
+- 🔄 Resume interrupted jobs
+- 👀 Audio track preview
+- 🚀 Auto-update system (1-click update from within the app)
+- 🖱️ Drag & Drop support
+
+---
+
+## 📥 Download
+
+👉 **Latest version:**  
+https://github.com/urscaviezel/Loudnorm-PRO/releases
+
+Download the `.exe` file from the latest release.
+
+---
+
+## 🛠️ Requirements
+
+- **FFmpeg** (not included)
+
+Download FFmpeg:  
+https://ffmpeg.org/download.html
+
+Make sure `ffmpeg.exe` and `ffprobe.exe` are available.
+
+---
+
+## 🚀 Usage
+
+1. Start the application  
+2. Select files or a folder  
+3. Choose audio/video settings  
+4. Click **Start**
+
+---
+
+## 🔄 Auto Update
+
+The app can automatically check for new versions on startup.
+
+- Click **Update** to manually check
+- If a new version is available, it can be downloaded and installed directly
+
+---
+
+## 📸 Screenshot
+
+![Screenshot](screenshot.png)
+
+---
+
+## ⚖️ License
+
+This project is licensed under the **GNU General Public License v3.0**
+
+---
+
+## 📦 Third-Party
+
+- FFmpeg (separate license applies)
+- tkinter / tkinterdnd2
+
+---
+
+## 👤 Author
+
+**urscaviezel**  
+https://github.com/urscaviezel
+
+---
+
+## 💡 Notes
+
+- FFmpeg is required but not bundled
+- Works best with modern NVIDIA GPUs for NVENC encoding
