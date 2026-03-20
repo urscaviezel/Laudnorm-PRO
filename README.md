@@ -52,12 +52,9 @@ This project is licensed under the GNU GPL v3.
 
 FFmpeg is not included. Make sure it is installed separately
 
-## ⚠️ First Start
+## ⚠️ Note First Start
 
-Make sure FFmpeg is installed and available in PATH.
-
-## ⚠️ Note
-
+Make sure FFmpeg is installed and available in PATH
 FFmpeg is not included. Make sure it is installed separately
 
 ---
