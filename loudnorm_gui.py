@@ -7,6 +7,9 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
+import webbrowser
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -39,9 +42,13 @@ NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 LOUDNORM_SUFFIX_RE = re.compile(r"(?:_loudnorm(?:_nvenc)?)$", re.IGNORECASE)
 RESUME_STATE_FILE = "loudnorm_resume_state.csv"
 
-APP_VERSION = "0.9.1"
+APP_VERSION = "1.0.0"
 BUILD_DATE = "2026-03-20 15:50"
 PROJECT_LICENSE_NOTICE = "Planned release license: GNU GPL v3"
+GITHUB_REPO = "urscaviezel/Loudnorm-PRO"
+GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
+GITHUB_API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+UPDATE_TIMEOUT_SECONDS = 12
 
 PREFERRED_LANGUAGE_CHOICES = {
     "de": [("de", "Deutsch"), ("en", "Englisch"), ("orig", "Original"), ("first", "Erste Spur")],
@@ -78,6 +85,9 @@ UI_TEXT_DE = {
     "Vorschau ausblenden": "Vorschau ausblenden",
     "Vorschau anzeigen": "Vorschau anzeigen",
     "Build-Info": "Build-Info",
+    "Update": "Update",
+    "Version kopieren": "Version kopieren",
+    "GitHub öffnen": "GitHub öffnen",
     "Sprache": "Sprache",
     "Keine aktiven Jobs": "Keine aktiven Jobs",
 }
@@ -111,6 +121,9 @@ UI_TEXT_EN = {
     "Vorschau ausblenden": "Hide preview",
     "Vorschau anzeigen": "Show preview",
     "Build-Info": "Build info",
+    "Update": "Update",
+    "Version kopieren": "Copy version",
+    "GitHub öffnen": "Open GitHub",
     "Bevorzugte Sprache": "Preferred language",
     "Bevorzugte Sprache nach vorne setzen + als Default markieren": "Move preferred language first + mark as default",
     "Sprache": "Language",
@@ -173,6 +186,20 @@ I18N_MSGS = {
         "waiting": "Wartet...",
         "job_done": "Abgeschlossen",
         "job_skipped": "Uebersprungen",
+        "update_available_title": "Update verfuegbar",
+        "update_not_available_title": "Kein Update",
+        "update_error_title": "Update-Fehler",
+        "update_busy_title": "Update gesperrt",
+        "update_checking": "Suche nach Updates...",
+        "update_busy_message": "Bitte erst warten, bis keine Verarbeitung mehr laeuft.",
+        "update_available_message": "Version {version} ist verfuegbar.\n\nMoechtest du das Update jetzt herunterladen und installieren?",
+        "update_not_available_message": "Du verwendest bereits die aktuelle Version ({version}).",
+        "update_download_started": "Update wird heruntergeladen...",
+        "update_download_finished": "Update heruntergeladen. Die App wird jetzt neu gestartet.",
+        "update_download_failed": "Update konnte nicht heruntergeladen werden:\n{error}",
+        "update_check_failed": "Update-Pruefung fehlgeschlagen:\n{error}",
+        "update_source_mode_message": "Neue Version {version} gefunden.\n\nZum Aktualisieren wird die Release-Seite im Browser geoeffnet, weil die App nicht als EXE laeuft.",
+        "update_no_exe_asset": "Es wurde kein EXE-Asset in der neuesten Release gefunden.",
     },
     "en": {
         "not_found": "not found",
@@ -226,6 +253,20 @@ I18N_MSGS = {
         "waiting": "Waiting...",
         "job_done": "Completed",
         "job_skipped": "Skipped",
+        "update_available_title": "Update available",
+        "update_not_available_title": "No update",
+        "update_error_title": "Update error",
+        "update_busy_title": "Update locked",
+        "update_checking": "Checking for updates...",
+        "update_busy_message": "Please wait until no processing is running.",
+        "update_available_message": "Version {version} is available.\n\nDo you want to download and install the update now?",
+        "update_not_available_message": "You are already using the latest version ({version}).",
+        "update_download_started": "Downloading update...",
+        "update_download_finished": "Update downloaded. The app will now restart.",
+        "update_download_failed": "The update could not be downloaded:\n{error}",
+        "update_check_failed": "Update check failed:\n{error}",
+        "update_source_mode_message": "A new version {version} was found.\n\nThe releases page will be opened in your browser because the app is not running as an EXE.",
+        "update_no_exe_asset": "No EXE asset was found in the latest release.",
     },
 }
 
@@ -566,6 +607,8 @@ class LoudnormApp:
         self.jobs_var = tk.StringVar(value="Auto")
         self.parallel_hint_var = tk.StringVar(value="Auto: --")
         self.language_var = tk.StringVar(value="Deutsch")
+        self.update_check_in_progress = False
+        self.startup_update_prompt_shown = False
 
         self._build_ui()
         self._bind_events()
@@ -635,6 +678,18 @@ class LoudnormApp:
         )
         self.btn_build_info.grid(row=0, column=3, sticky="e", ipady=2, ipadx=4)
 
+        self.btn_update = tk.Button(
+            header,
+            text="Update",
+            command=self.check_for_updates_manual,
+            bg="#375a7a",
+            fg="white",
+            activebackground="#4b6f92",
+            relief="flat",
+            font=("Segoe UI", 9),
+        )
+        self.btn_update.grid(row=0, column=4, sticky="e", padx=(6, 0), ipady=2, ipadx=8)
+
         self.left_shell = tk.Frame(self.main, bg="#202020", width=340)
         self.left_shell.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
         self.left_shell.grid_propagate(False)
@@ -678,6 +733,7 @@ class LoudnormApp:
         self.update_audio_track_mode_hint()
         self.on_source_mode_changed()
         self.apply_language()
+        self.root.after(1800, self.check_for_updates_silent)
 
         if DND_AVAILABLE:
             self._enable_drag_drop()
@@ -812,6 +868,10 @@ class LoudnormApp:
             self.update_tool_labels()
         except Exception:
             pass
+        try:
+            self.btn_update.config(text=self.tr("Update"))
+        except Exception:
+            pass
     def on_language_changed(self):
         self.apply_language()
         try:
@@ -916,22 +976,333 @@ class LoudnormApp:
         except Exception:
             pass
 
+
+    def _parse_version_tuple(self, value: str):
+        cleaned = re.sub(r"[^0-9.]", "", (value or "").strip())
+        if not cleaned:
+            return (0,)
+        parts = [int(p) for p in cleaned.split(".") if p != ""]
+        return tuple(parts) if parts else (0,)
+
+    def _fetch_latest_release(self):
+        req = urllib.request.Request(
+            GITHUB_API_LATEST,
+            headers={
+                "User-Agent": f"Loudnorm-PRO/{APP_VERSION}",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=UPDATE_TIMEOUT_SECONDS) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        return {
+            "tag": data.get("tag_name", ""),
+            "name": data.get("name", ""),
+            "body": data.get("body", ""),
+            "assets": data.get("assets", []),
+            "html_url": data.get("html_url", GITHUB_RELEASES_URL),
+        }
+
+    def _find_exe_asset(self, release_info):
+        for asset in release_info.get("assets", []):
+            name = (asset.get("name") or "").lower()
+            if name.endswith(".exe") and asset.get("browser_download_url"):
+                return asset
+        return None
+
+    def check_for_updates_silent(self):
+        if self.startup_update_prompt_shown:
+            return
+        self.check_for_updates(manual=False)
+
+    def check_for_updates_manual(self):
+        self.check_for_updates(manual=True)
+
+    def check_for_updates(self, manual: bool = False):
+        if self.update_check_in_progress:
+            return
+        self.update_check_in_progress = True
+        if manual:
+            self.log(self.msg("update_checking"))
+        threading.Thread(target=self._check_for_updates_worker, args=(manual,), daemon=True).start()
+
+    def _check_for_updates_worker(self, manual: bool):
+        try:
+            latest = self._fetch_latest_release()
+            latest_version = latest.get("tag") or latest.get("name") or "0"
+            is_newer = self._parse_version_tuple(latest_version) > self._parse_version_tuple(APP_VERSION)
+            self.ui(self._handle_update_check_result, manual, latest, is_newer, None)
+        except Exception as e:
+            self.ui(self._handle_update_check_result, manual, None, False, str(e))
+
+    def _handle_update_check_result(self, manual: bool, latest, is_newer: bool, error: str | None):
+        self.update_check_in_progress = False
+        if error:
+            if manual:
+                messagebox.showerror(self.msg("update_error_title"), self.msg("update_check_failed", error=error))
+            return
+
+        latest_version = latest.get("tag") or latest.get("name") or "?"
+        if not is_newer:
+            if manual:
+                messagebox.showinfo(self.msg("update_not_available_title"), self.msg("update_not_available_message", version=latest_version))
+            return
+
+        self.startup_update_prompt_shown = True
+        if not getattr(sys, "frozen", False):
+            if messagebox.askyesno(self.msg("update_available_title"), self.msg("update_source_mode_message", version=latest_version)):
+                webbrowser.open(latest.get("html_url", GITHUB_RELEASES_URL))
+            return
+
+        if self.worker_thread and self.worker_thread.is_alive():
+            messagebox.showwarning(self.msg("update_busy_title"), self.msg("update_busy_message"))
+            return
+
+        if messagebox.askyesno(self.msg("update_available_title"), self.msg("update_available_message", version=latest_version)):
+            self._start_update_download(latest)
+
+    def _start_update_download(self, latest):
+        asset = self._find_exe_asset(latest)
+        if not asset:
+            messagebox.showerror(self.msg("update_error_title"), self.msg("update_no_exe_asset"))
+            return
+        self.log(self.msg("update_download_started"))
+        threading.Thread(target=self._download_and_install_update_worker, args=(asset,), daemon=True).start()
+
+    def _download_and_install_update_worker(self, asset):
+        try:
+            download_url = asset.get("browser_download_url")
+            temp_dir = tempfile.gettempdir()
+            download_path = os.path.join(temp_dir, f"loudnorm_update_{int(time.time())}.exe")
+            req = urllib.request.Request(
+                download_url,
+                headers={"User-Agent": f"Loudnorm-PRO/{APP_VERSION}"},
+            )
+            with urllib.request.urlopen(req, timeout=UPDATE_TIMEOUT_SECONDS) as resp, open(download_path, "wb") as f:
+                while True:
+                    chunk = resp.read(1024 * 256)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+            self.ui(self._finish_update_install, download_path)
+        except Exception as e:
+            self.ui(messagebox.showerror, self.msg("update_error_title"), self.msg("update_download_failed", error=str(e)))
+
+    def _finish_update_install(self, download_path: str):
+        if not getattr(sys, "frozen", False):
+            return
+        current_exe = sys.executable
+        updater_bat = os.path.join(tempfile.gettempdir(), f"loudnorm_updater_{int(time.time())}.bat")
+        bat = f"""@echo off
+set SRC={download_path}
+set DST={current_exe}
+:retry
+copy /Y "%SRC%" "%DST%" >nul 2>&1
+if errorlevel 1 (
+  timeout /t 1 /nobreak >nul
+  goto retry
+)
+start "" "%DST%"
+del "%SRC%" >nul 2>&1
+del "%~f0"
+"""
+        with open(updater_bat, "w", encoding="utf-8") as f:
+            f.write(bat)
+        self.log(self.msg("update_download_finished"))
+        subprocess.Popen(["cmd", "/c", updater_bat], creationflags=NO_WINDOW)
+        self.root.after(300, self.root.destroy)
+
+    def copy_version_to_clipboard(self):
+        version_text = APP_VERSION
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(version_text)
+            self.root.update_idletasks()
+        except Exception:
+            pass
+
+    def open_repo_url(self):
+        try:
+            webbrowser.open(f"https://github.com/{GITHUB_REPO}")
+        except Exception:
+            pass
+
     def show_build_info(self):
         lang = self.get_lang_code()
-        info = (
-            f"Loudnorm PRO GUI\n"
-            f"Version: {APP_VERSION}\n"
-            f"Build: {BUILD_DATE}\n"
-            f"Python: {sys.version.split()[0]}\n"
-            f"FFmpeg: {self.ffmpeg_path or self.not_found_text()}\n"
-            f"FFprobe: {self.ffprobe_path or self.not_found_text()}\n\n"
-            f"{self.msg('license_notice')}\n"
-            f"{PROJECT_LICENSE_NOTICE}\n\n"
-            f"{self.msg('third_party')}\n"
-            f"{self.msg('ffmpeg_license_note')}\n"
-            f"- tkinter / tkinterdnd2"
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title(self.msg("build_info_title"))
+        dlg.configure(bg="#202020")
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        try:
+            dlg.iconbitmap(resource_path("loudnorm_pro_icon.ico"))
+        except Exception:
+            pass
+
+        container = tk.Frame(dlg, bg="#202020", padx=14, pady=14)
+        container.pack(fill="both", expand=True)
+
+        header = tk.Label(
+            container,
+            text="Loudnorm PRO GUI",
+            bg="#202020",
+            fg="#50dcff",
+            font=("Segoe UI Semibold", 14),
+            anchor="w",
         )
-        messagebox.showinfo(self.msg("build_info_title"), info)
+        header.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        info_lines = [
+            ("Version", APP_VERSION),
+            ("Build", BUILD_DATE),
+            ("Python", sys.version.split()[0]),
+            ("FFmpeg", self.ffmpeg_path or self.not_found_text()),
+            ("FFprobe", self.ffprobe_path or self.not_found_text()),
+            ("Repo", f"https://github.com/{GITHUB_REPO}"),
+        ]
+
+        row = 1
+        for label, value in info_lines:
+            tk.Label(
+                container,
+                text=f"{label}:",
+                bg="#202020",
+                fg="#9fdcff",
+                font=("Segoe UI", 9, "bold"),
+                anchor="nw",
+            ).grid(row=row, column=0, sticky="nw", padx=(0, 10), pady=2)
+            if label == "Repo":
+                link = tk.Label(
+                    container,
+                    text=value,
+                    bg="#202020",
+                    fg="#6db7ff",
+                    cursor="hand2",
+                    font=("Segoe UI", 9, "underline"),
+                    anchor="nw",
+                    justify="left",
+                    wraplength=460,
+                )
+                link.grid(row=row, column=1, sticky="nw", pady=2)
+                link.bind("<Button-1>", lambda e: self.open_repo_url())
+            else:
+                tk.Label(
+                    container,
+                    text=value,
+                    bg="#202020",
+                    fg="white",
+                    font=("Segoe UI", 9),
+                    anchor="nw",
+                    justify="left",
+                    wraplength=460,
+                ).grid(row=row, column=1, sticky="nw", pady=2)
+            row += 1
+
+        tk.Frame(container, bg="#404040", height=1).grid(row=row, column=0, columnspan=2, sticky="ew", pady=(10, 10))
+        row += 1
+
+        tk.Label(
+            container,
+            text=self.msg("license_notice"),
+            bg="#202020",
+            fg="#9fdcff",
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+        ).grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+
+        tk.Label(
+            container,
+            text=PROJECT_LICENSE_NOTICE,
+            bg="#202020",
+            fg="white",
+            font=("Segoe UI", 9),
+            anchor="w",
+            justify="left",
+            wraplength=540,
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 10))
+        row += 1
+
+        tk.Label(
+            container,
+            text=self.msg("third_party"),
+            bg="#202020",
+            fg="#9fdcff",
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+        ).grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+
+        third_party_text = f"{self.msg('ffmpeg_license_note')}\n- tkinter / tkinterdnd2"
+        tk.Label(
+            container,
+            text=third_party_text,
+            bg="#202020",
+            fg="white",
+            font=("Segoe UI", 9),
+            anchor="w",
+            justify="left",
+            wraplength=540,
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 12))
+        row += 1
+
+        buttons = tk.Frame(container, bg="#202020")
+        buttons.grid(row=row, column=0, columnspan=2, sticky="e")
+        buttons.grid_columnconfigure(0, weight=1)
+
+        btn_copy = tk.Button(
+            buttons,
+            text=self.tr("Version kopieren"),
+            command=self.copy_version_to_clipboard,
+            bg="#375a7a",
+            fg="white",
+            activebackground="#4b6f92",
+            relief="flat",
+            font=("Segoe UI", 9),
+            padx=10,
+        )
+        btn_copy.grid(row=0, column=0, padx=(0, 8), ipady=2)
+
+        btn_repo = tk.Button(
+            buttons,
+            text=self.tr("GitHub öffnen"),
+            command=self.open_repo_url,
+            bg="#375a7a",
+            fg="white",
+            activebackground="#4b6f92",
+            relief="flat",
+            font=("Segoe UI", 9),
+            padx=10,
+        )
+        btn_repo.grid(row=0, column=1, padx=(0, 8), ipady=2)
+
+        btn_ok = tk.Button(
+            buttons,
+            text="OK",
+            command=dlg.destroy,
+            bg="#2f2f2f",
+            fg="white",
+            activebackground="#454545",
+            relief="flat",
+            font=("Segoe UI", 9),
+            padx=14,
+        )
+        btn_ok.grid(row=0, column=2, ipady=2)
+
+        container.grid_columnconfigure(1, weight=1)
+        dlg.update_idletasks()
+
+        root_x = self.root.winfo_rootx()
+        root_y = self.root.winfo_rooty()
+        root_w = self.root.winfo_width()
+        root_h = self.root.winfo_height()
+        dlg_w = dlg.winfo_reqwidth()
+        dlg_h = dlg.winfo_reqheight()
+        pos_x = root_x + max(20, (root_w - dlg_w) // 2)
+        pos_y = root_y + max(20, (root_h - dlg_h) // 2)
+        dlg.geometry(f"+{pos_x}+{pos_y}")
+        dlg.grab_set()
+        dlg.focus_set()
 
     def _build_left_column(self):
         self.source_frame = tk.LabelFrame(
