@@ -1,4 +1,10 @@
 # Loudnorm PRO
+## ⬇️ Download
+
+👉 https://github.com/urscaviezel/Loudnorm-PRO/releases
+
+![Release](https://img.shields.io/github/v/release/urscaviezel/Loudnorm-PRO)
+![License](https://img.shields.io/github/license/urscaviezel/Loudnorm-PRO)
 
 A fast and simple GUI for batch audio normalization using FFmpeg (loudnorm).
 
@@ -46,10 +52,7 @@ This project is licensed under the GNU GPL v3.
 
 ## ⚠️ Note
 
-FFmpeg is not included. Make sure it is installed separately.
-
-Download latest version:
-https://github.com/urscaviezel/Loudnorm-PRO/releases
+FFmpeg is not included. Make sure it is installed separately
 
 ---
 
