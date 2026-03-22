@@ -4,7 +4,7 @@
 # 🎧 Loudnorm PRO
 
 **Batch Audio Normalization GUI for FFmpeg (loudnorm)**  
-Fast, simple and powerful tool for normalizing audio tracks in video files.
+Fast, simple and powerful tool for normalizing audio tracks in video files. (2-pass)
 
 ---
 
