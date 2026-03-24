@@ -1,7 +1,10 @@
 import csv
+import ctypes
+from ctypes import wintypes
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -25,25 +28,50 @@ except Exception:
     DND_AVAILABLE = False
 
 
-DEFAULT_INPUT = r"H:\Temp_Video"
-DEFAULT_OUTPUT = r"D:\Videos\NormalizeOutput"
+
+def get_app_dir() -> str:
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_data_dir() -> str:
+    base_dir = get_app_dir()
+    portable_marker = os.path.join(base_dir, "portable.mode")
+    if os.path.exists(portable_marker):
+        os.makedirs(base_dir, exist_ok=True)
+        return base_dir
+
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        data_dir = os.path.join(local_appdata, "Loudnorm PRO")
+    else:
+        data_dir = base_dir
+
+    os.makedirs(data_dir, exist_ok=True)
+    return data_dir
+
+
+DEFAULT_INPUT = ""
+DEFAULT_OUTPUT = ""
 
 VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".ts"}
-CRASH_LOG = os.path.join(tempfile.gettempdir(), "loudnorm_gui_crash.log")
+CRASH_LOG = os.path.join(get_data_dir(), "loudnorm_gui_crash.log")
 MAX_JOB_ROWS = 8
 JOB_FRAME_BASE_HEIGHT = 52
 JOB_ROW_HEIGHT = 74
-VISIBLE_JOB_ROWS = 5
-PREVIEW_BASE_HEIGHT = 110
+VISIBLE_JOB_ROWS = 3
+PREVIEW_BASE_HEIGHT = 77
 PREVIEW_ROW_HEIGHT = 26
 PREVIEW_MIN_ROWS = 4
 PREVIEW_MAX_ROWS = 8
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 LOUDNORM_SUFFIX_RE = re.compile(r"(?:_loudnorm(?:_nvenc)?)$", re.IGNORECASE)
-RESUME_STATE_FILE = "loudnorm_resume_state.csv"
+RESUME_STATE_FILE = os.path.join(get_data_dir(), "loudnorm_resume_state.csv")
+SETTINGS_FILE = "loudnorm_settings.json"
 
-APP_VERSION = "1.0.0"
-BUILD_DATE = "2026-03-20 15:50"
+APP_VERSION = "1.0.1"
+BUILD_DATE = "2026-03-23 12:15"
 PROJECT_LICENSE_NOTICE = "Planned release license: GNU GPL v3"
 GITHUB_REPO = "urscaviezel/Loudnorm-PRO"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
@@ -90,6 +118,11 @@ UI_TEXT_DE = {
     "GitHub öffnen": "GitHub öffnen",
     "Sprache": "Sprache",
     "Keine aktiven Jobs": "Keine aktiven Jobs",
+    "Originaldateien überschreiben": "Originaldateien überschreiben",
+    "Temporärer Arbeitsordner": "Temporärer Arbeitsordner",
+    "Theme": "Theme",
+    "Hell": "Hell",
+    "Dunkel": "Dunkel",
 }
 UI_TEXT_EN = {
     "Loudnorm PRO": "Loudnorm PRO",
@@ -128,8 +161,13 @@ UI_TEXT_EN = {
     "Bevorzugte Sprache nach vorne setzen + als Default markieren": "Move preferred language first + mark as default",
     "Sprache": "Language",
     "Keine aktiven Jobs": "No active jobs",
+    "Originaldateien überschreiben": "Overwrite original files",
+    "Temporärer Arbeitsordner": "Temporary work folder",
     "Unterbrochene Jobs fortsetzen": "Resume interrupted jobs",
     "Bereit": "Ready",
+    "Theme": "Theme",
+    "Hell": "Light",
+    "Dunkel": "Dark",
 }
 
 
@@ -186,6 +224,18 @@ I18N_MSGS = {
         "waiting": "Wartet...",
         "job_done": "Abgeschlossen",
         "job_skipped": "Uebersprungen",
+        "overwrite_hint": "Bei Erfolg wird die Originaldatei durch eine temporäre Ausgabedatei ersetzt.",
+                "overwrite_done": "Originaldatei ersetzt",
+        "preserve_timestamp_label": "Ursprünglichen Timestamp beibehalten",
+                "replace_failed": "Ersetzen fehlgeschlagen: {error}",
+                                                                "pass1_analyze_track": "Pass 1: Analyse Spur {current}/{total}",
+        "pass1_error": "Pass 1 Fehler",
+        "pass1_missing_stats": "Keine loudnorm Analysewerte fuer Spur {track} gefunden.",
+        "pass1_phase_track": "Pass 1 Spur {track}",
+        "pass1_json_incomplete": "Pass-1 JSON fuer Spur {track} unvollstaendig.",
+        "analysis_finished": "Analyse fertig",
+        "pass2_normalization": "Pass 2: Normalisierung",
+        "eta_short": "ETA {eta}",
         "update_available_title": "Update verfuegbar",
         "update_not_available_title": "Kein Update",
         "update_error_title": "Update-Fehler",
@@ -253,6 +303,18 @@ I18N_MSGS = {
         "waiting": "Waiting...",
         "job_done": "Completed",
         "job_skipped": "Skipped",
+        "overwrite_hint": "On success, the original file will be replaced by a temporary output file.",
+                "overwrite_done": "Original file replaced",
+        "preserve_timestamp_label": "Keep original timestamp",
+                "replace_failed": "Replace failed: {error}",
+                                                                "pass1_analyze_track": "Pass 1: Analyze track {current}/{total}",
+        "pass1_error": "Pass 1 error",
+        "pass1_missing_stats": "No loudnorm analysis values found for track {track}.",
+        "pass1_phase_track": "Pass 1 track {track}",
+        "pass1_json_incomplete": "Pass 1 JSON for track {track} is incomplete.",
+        "analysis_finished": "Analysis complete",
+        "pass2_normalization": "Pass 2: Normalization",
+        "eta_short": "ETA {eta}",
         "update_available_title": "Update available",
         "update_not_available_title": "No update",
         "update_error_title": "Update error",
@@ -286,6 +348,42 @@ def resource_path(relative_path: str) -> str:
     except Exception:
         base_path = get_app_dir()
     return os.path.join(base_path, relative_path)
+
+
+def set_windows_appusermodel_id() -> None:
+    if os.name != "nt":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("urscaviezel.LoudnormPRO")
+    except Exception:
+        pass
+
+
+def resolve_app_icon_path() -> str | None:
+    candidates = [
+        "loudnorm_pro_icon_optimized.ico",
+        "loudnorm_pro_icon.ico",
+    ]
+    for name in candidates:
+        path = resource_path(name)
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def resolve_app_icon_photo_paths() -> list[str]:
+    candidates = [
+        "loudnorm_pro_icon_16.png",
+        "loudnorm_pro_icon_32.png",
+        "loudnorm_pro_icon_48.png",
+        "loudnorm_pro_icon_optimized_256.png",
+    ]
+    result = []
+    for name in candidates:
+        path = resource_path(name)
+        if os.path.exists(path):
+            result.append(path)
+    return result
 
 
 def get_app_dir() -> str:
@@ -327,6 +425,30 @@ def normalize_name(name: str) -> str:
 
 def canonical_output_stem(name: str) -> str:
     return LOUDNORM_SUFFIX_RE.sub("", name)
+
+
+def sanitize_windows_config_path(value: str) -> str:
+    value = (value or "").strip().strip('"')
+    if not value:
+        return ""
+
+    repaired = []
+    for ch in value:
+        if ch == "\t":
+            repaired.append("\\t")
+        elif ch == "\n":
+            repaired.append("\\n")
+        elif ch == "\r":
+            repaired.append("\\r")
+        elif ch == "\f":
+            repaired.append("\\f")
+        elif ch == "\v":
+            repaired.append("\\v")
+        else:
+            repaired.append(ch)
+
+    value = "".join(repaired)
+    return value.replace("\\", "/")
 
 
 
@@ -488,6 +610,22 @@ def format_eta(seconds: float) -> str:
     return f"ETA: {secs} s"
 
 
+
+def format_eta_short(seconds: float) -> str:
+    try:
+        seconds = max(0, int(seconds))
+    except Exception:
+        return "--"
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, sec = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {sec:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
+
 def parse_dnd_files(data: str):
     parts = []
     buf = ""
@@ -550,15 +688,91 @@ def find_first_video_in_folder(folder: str):
     return None
 
 
+
+
+def _filetime_from_timestamp(timestamp: float) -> int:
+    return int((float(timestamp) + 11644473600.0) * 10000000)
+
+
+def get_path_timestamps(path: str) -> dict:
+    st = os.stat(path)
+    data = {
+        "created": float(getattr(st, "st_ctime", st.st_mtime)),
+        "accessed": float(st.st_atime),
+        "modified": float(st.st_mtime),
+    }
+    if os.name == "nt":
+        try:
+            GetFileAttributesExW = ctypes.windll.kernel32.GetFileAttributesExW
+            GetFileAttributesExW.argtypes = [wintypes.LPCWSTR, wintypes.INT, wintypes.LPVOID]
+            data_buf = (ctypes.c_byte * 36)()
+            if GetFileAttributesExW(path, 0, ctypes.byref(data_buf)):
+                ft_create = ctypes.c_ulonglong.from_buffer(data_buf, 4).value
+                if ft_create:
+                    data["created"] = (ft_create / 10000000.0) - 11644473600.0
+        except Exception:
+            pass
+    return data
+
+
+def set_path_timestamps(path: str, created: float | None = None, accessed: float | None = None, modified: float | None = None) -> None:
+    if accessed is not None or modified is not None:
+        current = os.stat(path)
+        os.utime(path, (
+            float(accessed if accessed is not None else current.st_atime),
+            float(modified if modified is not None else current.st_mtime),
+        ))
+
+    if created is not None and os.name == "nt":
+        GENERIC_WRITE = 0x40000000
+        OPEN_EXISTING = 3
+        FILE_ATTRIBUTE_NORMAL = 0x80
+        handle = ctypes.windll.kernel32.CreateFileW(
+            wintypes.LPCWSTR(path),
+            GENERIC_WRITE,
+            0,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+        if handle == wintypes.HANDLE(-1).value:
+            raise ctypes.WinError()
+
+        try:
+            c_time = ctypes.c_ulonglong(_filetime_from_timestamp(created))
+            a_time = ctypes.c_ulonglong(_filetime_from_timestamp(accessed if accessed is not None else os.stat(path).st_atime))
+            m_time = ctypes.c_ulonglong(_filetime_from_timestamp(modified if modified is not None else os.stat(path).st_mtime))
+            if not ctypes.windll.kernel32.SetFileTime(
+                handle,
+                ctypes.byref(c_time),
+                ctypes.byref(a_time),
+                ctypes.byref(m_time),
+            ):
+                raise ctypes.WinError()
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+
 class LoudnormApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Loudnorm PRO GUI")
+        self.root.title("Loudnorm PRO GUI v1.0.0")
         self.root.geometry("1040x680")
         self.root.minsize(760, 540)
         self.root.configure(bg="#202020")
+        self._app_icon_photos = []
         try:
-            self.root.iconbitmap(resource_path("loudnorm_pro_icon.ico"))
+            icon_photo_paths = resolve_app_icon_photo_paths()
+            for icon_photo_path in icon_photo_paths:
+                self._app_icon_photos.append(tk.PhotoImage(file=icon_photo_path))
+            if self._app_icon_photos:
+                self.root.iconphoto(True, *self._app_icon_photos)
+        except Exception:
+            self._app_icon_photos = []
+        try:
+            icon_path = resolve_app_icon_path()
+            if icon_path:
+                self.root.iconbitmap(default=icon_path)
         except Exception:
             pass
 
@@ -592,6 +806,7 @@ class LoudnormApp:
         self.source_mode_var = tk.StringVar(value="folder")
         self.input_var = tk.StringVar(value=DEFAULT_INPUT)
         self.output_var = tk.StringVar(value=DEFAULT_OUTPUT)
+        self.temp_work_dir_var = tk.StringVar(value="")
         self.audio_var = tk.StringVar(value="AAC")
         self.audio_bitrate_var = tk.StringVar(value="384k")
         self.audio_track_mode_var = tk.StringVar(value="Auto (bevorzugte Sprache)")
@@ -600,6 +815,10 @@ class LoudnormApp:
         self.preferred_language_var = tk.StringVar(value="Deutsch")
         self.prefer_german_first_hint_var = tk.StringVar(value="Optional: Nur im Modus 'Nur bevorzugte Sprache' wird die erste passende Spur nach vorne einsortiert und als Default markiert.")
         self.resume_jobs_var = tk.BooleanVar(value=True)
+        self.overwrite_original_var = tk.BooleanVar(value=False)
+        self.preserve_timestamp_var = tk.BooleanVar(value=True)
+        self.overwrite_hint_var = tk.StringVar(value="")
+        self.overwrite_warning_var = tk.StringVar(value="")
         self.resume_jobs_hint_var = tk.StringVar(value="Hinweis: Schneller nach Abbruch. Bereits abgeschlossene Dateien aus dem Ausgabeordner werden beim Neustart übersprungen.")
         self.video_var = tk.StringVar(value="COPY")
         self.video_preset_var = tk.StringVar(value="p5 balanced")
@@ -607,14 +826,156 @@ class LoudnormApp:
         self.jobs_var = tk.StringVar(value="Auto")
         self.parallel_hint_var = tk.StringVar(value="Auto: --")
         self.language_var = tk.StringVar(value="Deutsch")
+        self.theme_var = tk.StringVar(value="Dunkel")
         self.update_check_in_progress = False
         self.startup_update_prompt_shown = False
 
+        self.load_settings()
         self._build_ui()
         self._bind_events()
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(100, self.process_ui_queue)
+
+
+    def get_settings_path(self) -> str:
+        return os.path.join(get_data_dir(), SETTINGS_FILE)
+
+    def save_settings(self) -> None:
+        try:
+            temp_work_dir_value = sanitize_windows_config_path(self.temp_work_dir_var.get())
+
+            if not temp_work_dir_value:
+                try:
+                    settings_path = self.get_settings_path()
+                    if os.path.exists(settings_path):
+                        with open(settings_path, "r", encoding="utf-8") as f:
+                            existing_data = json.load(f)
+                        existing_temp = sanitize_windows_config_path(existing_data.get("temp_work_dir", ""))
+                        if existing_temp:
+                            temp_work_dir_value = existing_temp
+                except Exception:
+                    pass
+
+            data = {
+                "source_mode": self.source_mode_var.get(),
+                "input": self.input_var.get(),
+                "output": self.output_var.get(),
+                "temp_work_dir": temp_work_dir_value,
+                "audio": self.audio_var.get(),
+                "audio_bitrate": self.audio_bitrate_var.get(),
+                "audio_track_mode": self.get_audio_track_mode_key(),
+                "preferred_language": self.get_preferred_language_key(),
+                "prefer_first": bool(self.prefer_german_first_var.get()),
+                "resume_jobs": bool(self.resume_jobs_var.get()),
+                "video": self.video_var.get(),
+                "video_preset": self.video_preset_var.get(),
+                "video_bitrate": self.video_bitrate_var.get(),
+                "jobs": self.jobs_var.get(),
+                "language": self.language_var.get(),
+                "theme": self.theme_var.get(),
+                "preview_visible": bool(self.preview_visible_var.get()),
+            }
+            with open(self.get_settings_path(), "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def load_settings(self) -> None:
+        try:
+            path = self.get_settings_path()
+            if not os.path.exists(path):
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            source_mode = data.get("source_mode")
+            if source_mode in {"folder", "files"}:
+                self.source_mode_var.set(source_mode)
+
+            val = data.get("input")
+            if isinstance(val, str):
+                self.input_var.set(val)
+            val = data.get("output")
+            if isinstance(val, str):
+                self.output_var.set(val)
+            val = data.get("temp_work_dir")
+            if isinstance(val, str):
+                self.temp_work_dir_var.set(sanitize_windows_config_path(val))
+
+            if data.get("audio") in {"AAC", "E-AC3"}:
+                self.audio_var.set(data["audio"])
+            val = data.get("audio_bitrate")
+            if isinstance(val, str):
+                self.audio_bitrate_var.set(val)
+
+            mode_key = data.get("audio_track_mode")
+            if mode_key in {"auto", "all", "preferred_only"}:
+                self.audio_track_mode_var.set(self.get_audio_track_mode_display(mode_key))
+
+            pref_key = data.get("preferred_language")
+            if pref_key in {"de", "en", "orig", "first"}:
+                self.preferred_language_var.set(self.get_preferred_language_display(pref_key))
+
+            if "prefer_first" in data:
+                self.prefer_german_first_var.set(bool(data["prefer_first"]))
+            if "resume_jobs" in data:
+                self.resume_jobs_var.set(bool(data["resume_jobs"]))
+
+            if data.get("video") in {"COPY", "HEVC NVENC"}:
+                self.video_var.set(data["video"])
+            val = data.get("video_preset")
+            if isinstance(val, str):
+                self.video_preset_var.set(val)
+            val = data.get("video_bitrate")
+            if isinstance(val, str):
+                self.video_bitrate_var.set(val)
+
+            jobs = str(data.get("jobs", "")).strip()
+            if jobs in {"Auto", "1", "2", "3", "4", "5", "6", "7", "8"}:
+                self.jobs_var.set(jobs)
+
+            language = data.get("language")
+            if language in {"Deutsch", "English"}:
+                self.language_var.set(language)
+
+            theme = data.get("theme")
+            if theme in {"Dunkel", "Hell", "Dark", "Light"}:
+                self.theme_var.set("Dunkel" if theme == "Dark" else "Hell" if theme == "Light" else theme)
+
+            if "preview_visible" in data:
+                self.preview_visible_var.set(bool(data["preview_visible"]))
+        except Exception:
+            pass
+
+    def bind_settings_persistence(self) -> None:
+        def _save(*_args):
+            self.save_settings()
+
+        vars_to_watch = [
+            self.source_mode_var,
+            self.input_var,
+            self.output_var,
+            self.temp_work_dir_var,
+            self.audio_var,
+            self.audio_bitrate_var,
+            self.audio_track_mode_var,
+            self.preferred_language_var,
+            self.prefer_german_first_var,
+            self.resume_jobs_var,
+            self.video_var,
+            self.video_preset_var,
+            self.video_bitrate_var,
+            self.jobs_var,
+            self.language_var,
+            self.theme_var,
+            self.preview_visible_var,
+        ]
+        for var in vars_to_watch:
+            try:
+                var.trace_add("write", _save)
+            except Exception:
+                pass
 
     def _build_ui(self):
         style = ttk.Style()
@@ -622,7 +983,7 @@ class LoudnormApp:
             style.theme_use("clam")
         except Exception:
             pass
-        style.configure("TProgressbar", troughcolor="#2d2d2d")
+        style.configure("TProgressbar", troughcolor="#2d2d2d", background="#78ff78", lightcolor="#78ff78", darkcolor="#78ff78", bordercolor="#2d2d2d")
 
         self.root.grid_rowconfigure(0, weight=1)
         self.root.grid_columnconfigure(0, weight=1)
@@ -666,6 +1027,18 @@ class LoudnormApp:
         )
         self.language_combo.grid(row=0, column=2, sticky="e", padx=(0, 8))
 
+        self.btn_theme = tk.Button(
+            header,
+            text="Dunkel",
+            command=self.toggle_theme,
+            bg="#373737",
+            fg="white",
+            activebackground="#4a4a4a",
+            relief="flat",
+            font=("Segoe UI", 9),
+        )
+        self.btn_theme.grid(row=0, column=3, sticky="e", padx=(0, 8), ipady=2, ipadx=8)
+
         self.btn_build_info = tk.Button(
             header,
             text="Build-Info",
@@ -676,7 +1049,7 @@ class LoudnormApp:
             relief="flat",
             font=("Segoe UI", 9),
         )
-        self.btn_build_info.grid(row=0, column=3, sticky="e", ipady=2, ipadx=4)
+        self.btn_build_info.grid(row=0, column=4, sticky="e", ipady=2, ipadx=4)
 
         self.btn_update = tk.Button(
             header,
@@ -688,19 +1061,43 @@ class LoudnormApp:
             relief="flat",
             font=("Segoe UI", 9),
         )
-        self.btn_update.grid(row=0, column=4, sticky="e", padx=(6, 0), ipady=2, ipadx=8)
+        self.btn_update.grid(row=0, column=5, sticky="e", padx=(6, 0), ipady=2, ipadx=8)
 
         self.left_shell = tk.Frame(self.main, bg="#202020", width=340)
         self.left_shell.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
         self.left_shell.grid_propagate(False)
-        self.left_shell.grid_rowconfigure(0, weight=1)
+        self.left_shell.grid_rowconfigure(1, weight=1)
         self.left_shell.grid_columnconfigure(0, weight=1)
 
-        self.left_canvas = tk.Canvas(self.left_shell, bg="#202020", highlightthickness=0, bd=0)
-        self.left_canvas.grid(row=0, column=0, sticky="nsew")
-        self.left_scrollbar = tk.Scrollbar(self.left_shell, orient="vertical", command=self.left_canvas.yview)
-        self.left_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.left_source_holder = tk.Frame(self.left_shell, bg="#202020")
+        self.left_source_holder.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        self.left_source_holder.grid_columnconfigure(0, weight=1)
+
+        self.left_settings_frame = tk.LabelFrame(
+            self.left_shell,
+            text="Einstellungen",
+            bg="#202020",
+            fg="#9fdcff",
+            font=("Segoe UI Semibold", 10),
+            bd=1,
+        )
+        self.left_settings_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(0, 6))
+        self.left_settings_frame.grid_rowconfigure(0, weight=1)
+        self.left_settings_frame.grid_columnconfigure(0, weight=1)
+
+        self.left_canvas = tk.Canvas(self.left_settings_frame, bg="#202020", highlightthickness=0, bd=0)
+        self.left_canvas.grid(row=0, column=0, sticky="nsew", padx=(6, 0), pady=(4, 6))
+        self.left_scrollbar = tk.Scrollbar(self.left_settings_frame, orient="vertical", command=self.left_canvas.yview)
+        self.left_scrollbar.grid(row=0, column=1, sticky="ns", padx=(0, 6), pady=(4, 6))
         self.left_canvas.configure(yscrollcommand=self.left_scrollbar.set)
+
+        self.left_tools_holder = tk.Frame(self.left_shell, bg="#202020")
+        self.left_tools_holder.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        self.left_tools_holder.grid_columnconfigure(0, weight=1)
+
+        self.left_actions_holder = tk.Frame(self.left_shell, bg="#202020")
+        self.left_actions_holder.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        self.left_actions_holder.grid_columnconfigure(0, weight=1)
 
         self.left_col = tk.Frame(self.left_canvas, bg="#202020", width=320)
         self.left_col.grid_columnconfigure(0, weight=1)
@@ -714,10 +1111,7 @@ class LoudnormApp:
             "<Configure>",
             lambda e: self.left_canvas.itemconfigure(self.left_canvas_window, width=e.width)
         )
-        self.left_canvas.bind_all(
-            "<MouseWheel>",
-            lambda e: self.left_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
-        )
+        self.root.after(200, self._bind_left_panel_mousewheel_targets)
 
         self.right_col = tk.Frame(self.main, bg="#202020")
         self.right_col.grid(row=1, column=1, sticky="nsew")
@@ -732,12 +1126,111 @@ class LoudnormApp:
         self.update_tool_labels()
         self.update_audio_track_mode_hint()
         self.on_source_mode_changed()
+        self.update_overwrite_ui()
         self.apply_language()
+        self.apply_theme()
         self.root.after(1800, self.check_for_updates_silent)
 
+        self.bind_settings_persistence()
+        
         if DND_AVAILABLE:
             self._enable_drag_drop()
 
+
+
+    def toggle_theme(self):
+        current = self.theme_var.get()
+        self.theme_var.set("Hell" if current in {"Dunkel", "Dark"} else "Dunkel")
+        self.apply_theme()
+        self.save_settings()
+
+    def apply_theme(self):
+        dark = self.theme_var.get() in {"Dunkel", "Dark"}
+        bg = "#202020" if dark else "#f2f2f2"
+        panel = "#202020" if dark else "#ffffff"
+        entry_bg = "#2d2d2d" if dark else "#ffffff"
+        entry_fg = "white" if dark else "#111111"
+        accent = "#9fdcff" if dark else "#0b5cab"
+        title_fg = "#50dcff" if dark else "#0b5cab"
+        warn = "#ffd278" if dark else "#8a5a00"
+        soft = "#9fdcff" if dark else "#3f6ea5"
+
+        try:
+            self.root.configure(bg=bg)
+            self.main.configure(bg=bg)
+            self.header_title.configure(bg=bg, fg=title_fg)
+            self.lbl_language.configure(bg=bg, fg=accent)
+            self.left_shell.configure(bg=bg)
+            self.left_source_holder.configure(bg=bg)
+            self.left_tools_holder.configure(bg=bg)
+            self.left_actions_holder.configure(bg=bg)
+            self.left_col.configure(bg=bg)
+            self.left_canvas.configure(bg=bg)
+            self.right_col.configure(bg=bg)
+            self.preview_header.configure(bg=bg)
+            self.progress_frame.configure(bg=bg, fg=accent)
+            self.preview_frame.configure(bg=bg, fg=accent)
+            self.jobs_frame.configure(bg=bg, fg=accent)
+            self.log_frame.configure(bg=bg, fg=accent)
+            self.source_frame.configure(bg=bg, fg=accent)
+            self.left_settings_frame.configure(bg=bg, fg=accent)
+            self.tools_frame.configure(bg=bg, fg=accent)
+            self.btn_theme.configure(text=("Dunkel" if dark else "Hell"))
+        except Exception:
+            pass
+
+        try:
+            style = ttk.Style()
+            style.configure("TProgressbar",
+                            troughcolor="#2d2d2d" if dark else "#d8d8d8",
+                            background="#78ff78",
+                            lightcolor="#78ff78",
+                            darkcolor="#78ff78",
+                            bordercolor="#2d2d2d" if dark else "#d8d8d8")
+            style.configure("Treeview", background=panel, fieldbackground=panel, foreground=entry_fg)
+            style.configure("Treeview.Heading", background=entry_bg, foreground=entry_fg)
+        except Exception:
+            pass
+
+        def walk(widget):
+            for child in widget.winfo_children():
+                try:
+                    cls = child.winfo_class()
+                    if cls in {"Frame", "Labelframe", "LabelFrame"}:
+                        child.configure(bg=bg)
+                        try:
+                            child.configure(fg=accent)
+                        except Exception:
+                            pass
+                    elif cls == "Label":
+                        fg = child.cget("fg")
+                        if fg in ("#ffd278", "#ffb070"):
+                            child.configure(bg=bg, fg=warn)
+                        elif fg in ("#9fdcff", "#50dcff"):
+                            child.configure(bg=bg, fg=accent if fg == "#9fdcff" else title_fg)
+                        else:
+                            child.configure(bg=bg, fg=entry_fg)
+                    elif cls in {"Button", "Checkbutton", "Radiobutton"}:
+                        child.configure(bg=entry_bg if cls == "Button" else bg,
+                                        fg=entry_fg,
+                                        activebackground=entry_bg if cls == "Button" else bg,
+                                        activeforeground=entry_fg,
+                                        selectcolor=entry_bg)
+                    elif cls == "Entry":
+                        child.configure(bg=entry_bg, fg=entry_fg, insertbackground=entry_fg)
+                    elif cls == "Text":
+                        child.configure(bg="#141414" if dark else "#ffffff", fg=entry_fg, insertbackground=entry_fg)
+                    elif cls == "Listbox":
+                        child.configure(bg="#141414" if dark else "#ffffff", fg=entry_fg)
+                    elif cls == "Canvas":
+                        child.configure(bg=bg)
+                except Exception:
+                    pass
+                walk(child)
+        try:
+            walk(self.main)
+        except Exception:
+            pass
 
     def get_lang_code(self):
         return "en" if self.language_var.get() == "English" else "de"
@@ -849,6 +1342,13 @@ class LoudnormApp:
         except Exception:
             pass
         try:
+            self.left_settings_frame.config(text=("Einstellungen" if self.get_lang_code() == "de" else "Settings"))
+            self.chk_overwrite_original.config(text=self.tr("Originaldateien überschreiben"))
+            self.chk_preserve_timestamp.config(text=self.tr("Ursprünglichen Timestamp beibehalten"))
+            self.update_overwrite_ui()
+        except Exception:
+            pass
+        try:
             self.update_audio_track_mode_hint()
         except Exception:
             pass
@@ -870,6 +1370,7 @@ class LoudnormApp:
             pass
         try:
             self.btn_update.config(text=self.tr("Update"))
+            self.btn_theme.config(text=self.tr(self.theme_var.get()))
         except Exception:
             pass
     def on_language_changed(self):
@@ -1159,6 +1660,7 @@ del "%~f0"
             ("FFmpeg", self.ffmpeg_path or self.not_found_text()),
             ("FFprobe", self.ffprobe_path or self.not_found_text()),
             ("Repo", f"https://github.com/{GITHUB_REPO}"),
+            ("Data", get_data_dir()),
         ]
 
         row = 1
@@ -1304,9 +1806,151 @@ del "%~f0"
         dlg.grab_set()
         dlg.focus_set()
 
+
+    def _scroll_left_canvas_from_event(self, event):
+        try:
+            if hasattr(event, "delta") and event.delta:
+                steps = int(-1 * (event.delta / 120))
+                if steps == 0:
+                    steps = -1 if event.delta > 0 else 1
+            elif getattr(event, "num", None) == 4:
+                steps = -1
+            elif getattr(event, "num", None) == 5:
+                steps = 1
+            else:
+                steps = 0
+
+            if steps:
+                self.left_canvas.yview_scroll(steps, "units")
+        except Exception:
+            pass
+        return "break"
+
+    def _block_combobox_mousewheel(self, event):
+        # Scroll the left settings pane, but do not let the combobox change its value.
+        return self._scroll_left_canvas_from_event(event)
+
+    def _on_left_panel_mousewheel(self, event):
+        return self._scroll_left_canvas_from_event(event)
+
+    def _bind_left_panel_mousewheel_to_widget(self, widget):
+        try:
+            if hasattr(self, "jobs_frame"):
+                parent = widget
+                while parent is not None:
+                    if parent == self.jobs_frame:
+                        return
+                    parent = getattr(parent, "master", None)
+            widget_class = str(widget.winfo_class())
+        except Exception:
+            widget_class = ""
+
+        redirect_classes = {
+            "TCombobox", "Combobox", "TSpinbox", "Spinbox",
+            "Entry", "Text", "Listbox"
+        }
+
+        handler = self._block_combobox_mousewheel if widget_class in redirect_classes else self._on_left_panel_mousewheel
+
+        try:
+            widget.bind("<MouseWheel>", handler)
+            widget.bind("<Button-4>", handler)
+            widget.bind("<Button-5>", handler)
+        except Exception:
+            pass
+
+        try:
+            for child in widget.winfo_children():
+                self._bind_left_panel_mousewheel_to_widget(child)
+        except Exception:
+            pass
+
+    def _bind_left_panel_mousewheel_targets(self):
+        try:
+            self._bind_left_panel_mousewheel_to_widget(self.left_col)
+        except Exception:
+            pass
+
+    def replace_original_file(self, temp_output: str, final_output: str, preserve_timestamp: bool = True):
+        temp_output = os.path.normpath(temp_output)
+        final_output = os.path.normpath(final_output)
+
+        if not os.path.exists(temp_output):
+            raise FileNotFoundError(temp_output)
+        if os.path.normcase(temp_output) == os.path.normcase(final_output):
+            raise OSError("Temporary output path must differ from final output path.")
+
+        target_dir = os.path.dirname(final_output) or "."
+        os.makedirs(target_dir, exist_ok=True)
+
+        original_times = None
+        if os.path.exists(final_output):
+            try:
+                original_times = get_path_timestamps(final_output)
+            except Exception:
+                original_times = None
+
+        temp_drive = os.path.splitdrive(temp_output)[0].lower()
+        final_drive = os.path.splitdrive(final_output)[0].lower()
+
+        if temp_drive == final_drive:
+            os.replace(temp_output, final_output)
+        else:
+            swap_name = f".__replace_tmp__{os.getpid()}_{threading.get_ident()}_{int(time.time() * 1000)}_{os.path.basename(final_output)}"
+            swap_path = os.path.join(target_dir, swap_name)
+
+            try:
+                shutil.copyfile(temp_output, swap_path)
+                os.replace(swap_path, final_output)
+            except Exception:
+                try:
+                    if os.path.exists(swap_path):
+                        os.remove(swap_path)
+                except Exception:
+                    pass
+                raise
+            finally:
+                try:
+                    if os.path.exists(temp_output):
+                        os.remove(temp_output)
+                except Exception:
+                    pass
+
+        try:
+            now = time.time()
+            if preserve_timestamp and original_times:
+                set_path_timestamps(
+                    final_output,
+                    created=original_times.get("created"),
+                    accessed=original_times.get("accessed"),
+                    modified=original_times.get("modified"),
+                )
+            else:
+                set_path_timestamps(final_output, created=now, accessed=now, modified=now)
+        except Exception:
+            pass
+
+    def update_overwrite_ui(self):
+        overwrite = bool(self.overwrite_original_var.get())
+        self.overwrite_hint_var.set(self.msg("overwrite_hint") if overwrite else "")
+        self.overwrite_warning_var.set("AUF EIGENE GEFAHR!" if overwrite and self.get_lang_code() == "de" else "USE AT YOUR OWN RISK!" if overwrite else "")
+
+        try:
+            self.chk_preserve_timestamp.config(state=("normal" if overwrite else "disabled"))
+        except Exception:
+            pass
+
+        try:
+            self.output_label.grid()
+            self.out_row.grid()
+            self.output_entry.config(state="normal")
+            self.btn_browse_out.config(state="normal")
+        except Exception:
+            pass
+
     def _build_left_column(self):
         self.source_frame = tk.LabelFrame(
-            self.left_col,
+            self.left_source_holder,
             text="Quelle",
             bg="#202020",
             fg="#9fdcff",
@@ -1503,31 +2147,30 @@ del "%~f0"
             font=("Segoe UI", 9),
         ).grid(row=2, column=0, sticky="ew", pady=(4, 0))
 
-        self.control_frame = tk.LabelFrame(
+        self.control_frame = tk.Frame(
             self.left_col,
-            text="Verarbeitung",
             bg="#202020",
-            fg="#9fdcff",
-            font=("Segoe UI Semibold", 10),
-            bd=1,
+            bd=0,
+            highlightthickness=0,
         )
-        self.control_frame.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        self.control_frame.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         self.control_frame.grid_columnconfigure(0, weight=1)
 
-        tk.Label(
+        self.output_label = tk.Label(
             self.control_frame,
             text="Ausgabeordner",
             bg="#202020",
             fg="white",
             font=("Segoe UI", 9),
-        ).grid(row=0, column=0, sticky="w", padx=6, pady=(4, 2))
+        )
+        self.output_label.grid(row=0, column=0, sticky="w", padx=6, pady=(4, 2))
 
-        out_row = tk.Frame(self.control_frame, bg="#202020")
-        out_row.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 5))
-        out_row.grid_columnconfigure(0, weight=1)
+        self.out_row = tk.Frame(self.control_frame, bg="#202020")
+        self.out_row.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 5))
+        self.out_row.grid_columnconfigure(0, weight=1)
 
         self.output_entry = tk.Entry(
-            out_row,
+            self.out_row,
             textvariable=self.output_var,
             bg="#2d2d2d",
             fg="white",
@@ -1539,7 +2182,7 @@ del "%~f0"
         self.output_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6), ipady=3)
 
         self.btn_browse_out = tk.Button(
-            out_row,
+            self.out_row,
             text="Durchsuchen",
             command=self.browse_output,
             bg="#373737",
@@ -1629,6 +2272,57 @@ del "%~f0"
             font=("Segoe UI", 8),
         ).grid(row=12, column=0, sticky="ew", padx=6, pady=(0, 2))
 
+        tk.Label(self.control_frame, text="Video", bg="#202020", fg="white", font=("Segoe UI", 9)).grid(row=13, column=0, sticky="w", padx=6)
+        self.video_combo = ttk.Combobox(
+            self.control_frame,
+            textvariable=self.video_var,
+            values=["COPY", "HEVC NVENC"],
+            state="readonly",
+            font=("Segoe UI", 10),
+        )
+        self.video_combo.grid(row=14, column=0, sticky="ew", padx=6, pady=(0, 2))
+
+        tk.Label(self.control_frame, text="Video-Preset", bg="#202020", fg="white", font=("Segoe UI", 9)).grid(row=15, column=0, sticky="w", padx=6)
+        self.video_preset_combo = ttk.Combobox(
+            self.control_frame,
+            textvariable=self.video_preset_var,
+            values=["p7 slow", "p6 slower", "p5 balanced", "p4 faster", "p3 fastest"],
+            state="readonly",
+            font=("Segoe UI", 10),
+        )
+        self.video_preset_combo.grid(row=16, column=0, sticky="ew", padx=6, pady=(0, 2))
+
+        tk.Label(self.control_frame, text="Video-Bitrate", bg="#202020", fg="white", font=("Segoe UI", 9)).grid(row=17, column=0, sticky="w", padx=6)
+        self.video_bitrate_combo = ttk.Combobox(
+            self.control_frame,
+            textvariable=self.video_bitrate_var,
+            values=["CQ 19 (quality)", "4 Mbps", "8 Mbps", "12 Mbps", "20 Mbps", "30 Mbps"],
+            state="readonly",
+            font=("Segoe UI", 10),
+        )
+        self.video_bitrate_combo.grid(row=18, column=0, sticky="ew", padx=6, pady=(0, 4))
+
+        tk.Label(self.control_frame, text="Parallel-Jobs", bg="#202020", fg="white", font=("Segoe UI", 9)).grid(row=19, column=0, sticky="w", padx=6)
+        self.jobs_combo = ttk.Combobox(
+            self.control_frame,
+            textvariable=self.jobs_var,
+            values=["Auto", "1", "2", "3", "4", "5", "6", "7", "8"],
+            state="readonly",
+            font=("Segoe UI", 10),
+        )
+        self.jobs_combo.grid(row=20, column=0, sticky="ew", padx=6, pady=(0, 2))
+
+        tk.Label(
+            self.control_frame,
+            textvariable=self.parallel_hint_var,
+            bg="#202020",
+            fg="#9fdcff",
+            font=("Segoe UI", 8),
+            anchor="w",
+            justify="left",
+            wraplength=300,
+        ).grid(row=21, column=0, sticky="ew", padx=6, pady=(0, 6))
+
         self.chk_resume_jobs = tk.Checkbutton(
             self.control_frame,
             text="Unterbrochene Jobs fortsetzen",
@@ -1642,7 +2336,7 @@ del "%~f0"
             anchor="w",
             justify="left",
         )
-        self.chk_resume_jobs.grid(row=13, column=0, sticky="ew", padx=6, pady=(0, 1))
+        self.chk_resume_jobs.grid(row=22, column=0, sticky="ew", padx=6, pady=(4, 1))
 
         tk.Label(
             self.control_frame,
@@ -1653,61 +2347,63 @@ del "%~f0"
             anchor="w",
             wraplength=300,
             font=("Segoe UI", 8),
-        ).grid(row=14, column=0, sticky="ew", padx=6, pady=(0, 4))
+        ).grid(row=23, column=0, sticky="ew", padx=6, pady=(0, 2))
 
-        tk.Label(self.control_frame, text="Video", bg="#202020", fg="white", font=("Segoe UI", 9)).grid(row=15, column=0, sticky="w", padx=6)
-        self.video_combo = ttk.Combobox(
+        self.chk_overwrite_original = tk.Checkbutton(
             self.control_frame,
-            textvariable=self.video_var,
-            values=["COPY", "HEVC NVENC"],
-            state="readonly",
-            font=("Segoe UI", 10),
+            text="Originaldateien überschreiben",
+            variable=self.overwrite_original_var,
+            bg="#202020",
+            fg="white",
+            selectcolor="#303030",
+            activebackground="#202020",
+            activeforeground="white",
+            font=("Segoe UI", 9),
+            anchor="w",
+            justify="left",
+            command=self.update_overwrite_ui,
         )
-        self.video_combo.grid(row=16, column=0, sticky="ew", padx=6, pady=(0, 2))
+        self.chk_overwrite_original.grid(row=24, column=0, sticky="ew", padx=6, pady=(0, 1))
 
-        tk.Label(self.control_frame, text="Video-Preset", bg="#202020", fg="white", font=("Segoe UI", 9)).grid(row=17, column=0, sticky="w", padx=6)
-        self.video_preset_combo = ttk.Combobox(
+        self.chk_preserve_timestamp = tk.Checkbutton(
             self.control_frame,
-            textvariable=self.video_preset_var,
-            values=["p7 slow", "p6 slower", "p5 balanced", "p4 faster", "p3 fastest"],
-            state="readonly",
-            font=("Segoe UI", 10),
+            text="Ursprünglichen Timestamp beibehalten",
+            variable=self.preserve_timestamp_var,
+            bg="#202020",
+            fg="white",
+            selectcolor="#303030",
+            activebackground="#202020",
+            activeforeground="white",
+            font=("Segoe UI", 9),
+            anchor="w",
+            justify="left",
         )
-        self.video_preset_combo.grid(row=18, column=0, sticky="ew", padx=6, pady=(0, 2))
-
-        tk.Label(self.control_frame, text="Video-Bitrate", bg="#202020", fg="white", font=("Segoe UI", 9)).grid(row=19, column=0, sticky="w", padx=6)
-        self.video_bitrate_combo = ttk.Combobox(
-            self.control_frame,
-            textvariable=self.video_bitrate_var,
-            values=["CQ 19 (quality)", "4 Mbps", "8 Mbps", "12 Mbps", "20 Mbps", "30 Mbps"],
-            state="readonly",
-            font=("Segoe UI", 10),
-        )
-        self.video_bitrate_combo.grid(row=20, column=0, sticky="ew", padx=6, pady=(0, 4))
-
-        tk.Label(self.control_frame, text="Parallel-Jobs", bg="#202020", fg="white", font=("Segoe UI", 9)).grid(row=21, column=0, sticky="w", padx=6)
-        self.jobs_combo = ttk.Combobox(
-            self.control_frame,
-            textvariable=self.jobs_var,
-            values=["Auto", "1", "2", "3", "4", "5", "6", "7", "8"],
-            state="readonly",
-            font=("Segoe UI", 10),
-        )
-        self.jobs_combo.grid(row=22, column=0, sticky="ew", padx=6, pady=(0, 2))
+        self.chk_preserve_timestamp.grid(row=25, column=0, sticky="ew", padx=18, pady=(0, 1))
 
         tk.Label(
             self.control_frame,
-            textvariable=self.parallel_hint_var,
+            textvariable=self.overwrite_warning_var,
             bg="#202020",
-            fg="#9fdcff",
-            font=("Segoe UI", 8),
-            anchor="w",
+            fg="#ff8080",
             justify="left",
+            anchor="w",
             wraplength=300,
-        ).grid(row=23, column=0, sticky="ew", padx=6, pady=(0, 6))
+            font=("Segoe UI", 8, "bold"),
+        ).grid(row=26, column=0, sticky="ew", padx=18, pady=(0, 1))
 
-        actions = tk.Frame(self.control_frame, bg="#202020")
-        actions.grid(row=24, column=0, sticky="ew", padx=6, pady=(0, 6))
+        tk.Label(
+            self.control_frame,
+            textvariable=self.overwrite_hint_var,
+            bg="#202020",
+            fg="#ffb070",
+            justify="left",
+            anchor="w",
+            wraplength=300,
+            font=("Segoe UI", 8),
+        ).grid(row=27, column=0, sticky="ew", padx=6, pady=(0, 1))
+
+        actions = tk.Frame(self.left_actions_holder, bg="#202020")
+        actions.grid(row=0, column=0, sticky="ew", padx=6, pady=(0, 6))
         actions.grid_columnconfigure(0, weight=1)
         actions.grid_columnconfigure(1, weight=1)
         actions.grid_columnconfigure(2, weight=1)
@@ -1750,14 +2446,14 @@ del "%~f0"
         self.btn_close.grid(row=0, column=2, sticky="ew", ipady=3)
 
         self.tools_frame = tk.LabelFrame(
-            self.left_col,
+            self.left_tools_holder,
             text="Tools",
             bg="#202020",
             fg="#9fdcff",
             font=("Segoe UI Semibold", 10),
             bd=1,
         )
-        self.tools_frame.grid(row=2, column=0, sticky="ew")
+        self.tools_frame.grid(row=0, column=0, sticky="ew")
         self.tools_frame.grid_columnconfigure(1, weight=1)
 
         self.ffmpeg_used_var = tk.StringVar(value=self.ffmpeg_path or self.not_found_text())
@@ -1786,6 +2482,47 @@ del "%~f0"
             justify="left",
             wraplength=300,
         ).grid(row=1, column=1, sticky="ew", padx=(0, 6), pady=(2, 6))
+
+
+
+    def _on_jobs_mousewheel(self, event):
+        try:
+            if hasattr(event, "delta") and event.delta:
+                steps = int(-1 * (event.delta / 120))
+                if steps == 0:
+                    steps = -1 if event.delta > 0 else 1
+            elif getattr(event, "num", None) == 4:
+                steps = -1
+            elif getattr(event, "num", None) == 5:
+                steps = 1
+            else:
+                steps = 0
+
+            if steps:
+                self.jobs_canvas.yview_scroll(steps, "units")
+                return "break"
+        except Exception:
+            pass
+        return None
+
+    def _bind_jobs_mousewheel_widget(self, widget):
+        try:
+            widget.bind("<MouseWheel>", self._on_jobs_mousewheel, add="+")
+            widget.bind("<Button-4>", self._on_jobs_mousewheel, add="+")
+            widget.bind("<Button-5>", self._on_jobs_mousewheel, add="+")
+        except Exception:
+            pass
+        try:
+            for child in widget.winfo_children():
+                self._bind_jobs_mousewheel_widget(child)
+        except Exception:
+            pass
+
+    def _bind_jobs_mousewheel(self):
+        try:
+            self._bind_jobs_mousewheel_widget(self.jobs_frame)
+        except Exception:
+            pass
 
     def _build_right_column(self):
         self.progress_frame = tk.LabelFrame(
@@ -1996,6 +2733,9 @@ del "%~f0"
             lbl_phase = tk.Label(row, text="-", bg="#202020", fg="#ffd278", font=("Segoe UI", 8), anchor="w")
             lbl_phase.grid(row=1, column=1, sticky="ew", padx=(0, 6), pady=(0, 1))
 
+            lbl_eta = tk.Label(row, text="ETA --", bg="#202020", fg="#9fdcff", font=("Segoe UI", 8), anchor="e")
+            lbl_eta.grid(row=1, column=2, sticky="e", padx=6, pady=(0, 1))
+
             pbar = ttk.Progressbar(row, maximum=100, mode="determinate")
             pbar.grid(row=2, column=0, columnspan=3, sticky="ew", padx=6, pady=(0, 4), ipady=1)
 
@@ -2005,8 +2745,13 @@ del "%~f0"
                     "job_label": lbl_job,
                     "name_label": lbl_name,
                     "phase_label": lbl_phase,
+                    "eta_label": lbl_eta,
                     "progress": pbar,
                     "pct_label": lbl_pct,
+                    "current_name": "",
+                    "started_ts": None,
+                    "phase_name": None,
+                    "phase_started_ts": None,
                 }
             )
 
@@ -2036,11 +2781,14 @@ del "%~f0"
         scroll.grid(row=0, column=1, sticky="ns", pady=6)
         self.log_text.configure(yscrollcommand=scroll.set)
 
+        self._bind_jobs_mousewheel()
+
         self.paned.add(self.jobs_frame, minsize=130, height=self.calculate_jobs_frame_height(self.get_parallel_jobs()))
         self.paned.add(self.log_frame, minsize=150)
 
         self.update_audio_bitrate_ui()
         self.update_video_options_ui()
+        self.update_overwrite_ui()
         self.update_preview_toggle_ui()
 
 
@@ -2134,198 +2882,39 @@ del "%~f0"
             self.input_var.set(path)
             self.schedule_audio_preview_refresh(force_probe=True)
 
-    def browse_output(self):
-        start_dir = self.output_var.get().strip()
-        if not start_dir or not os.path.isdir(start_dir):
-            start_dir = get_app_dir()
-        path = filedialog.askdirectory(initialdir=start_dir)
-        if path:
-            self.output_var.set(path)
 
-    def add_files_dialog(self):
-        files = filedialog.askopenfilenames(
-            title=self.msg("select_video_files_title"),
-            filetypes=[("Video", "*.mkv *.mp4 *.avi *.mov *.m4v *.ts"), ("Alle Dateien", "*.*")],
-        )
-        if files:
-            added = self.add_files_to_list(files)
-            self.log(self.msg("files_added", count=added))
+    def get_effective_temp_work_dir(self, input_file: str = "") -> str:
+        custom_dir = sanitize_windows_config_path(self.temp_work_dir_var.get())
+        if not custom_dir:
+            raise RuntimeError("Temp work dir is required when overwrite mode is enabled.")
 
-    def add_folder_dialog(self):
-        folder = filedialog.askdirectory(title=self.msg("select_folder_title"))
-        if folder:
-            files = collect_videos_from_folder(folder)
-            added = self.add_files_to_list(files)
-            self.log(self.msg("files_added_from_folder", count=added))
+        try:
+            custom_dir = os.path.normpath(custom_dir)
+            os.makedirs(custom_dir, exist_ok=True)
+        except Exception as e:
+            raise RuntimeError(f"Invalid temp work dir: {custom_dir}. Use forward slashes in loudnorm_settings.json, e.g. H:/testvideo_temp") from e
 
-    def add_files_to_list(self, files):
-        existing = {os.path.normcase(os.path.abspath(p)) for p in self.file_list}
-        added = 0
+        if not os.path.isdir(custom_dir):
+            raise RuntimeError(f"Invalid temp work dir: {custom_dir}. Use forward slashes in loudnorm_settings.json, e.g. H:/testvideo_temp")
 
-        for f in files:
-            if not f:
-                continue
-            full = os.path.abspath(f)
-            if not os.path.isfile(full):
-                continue
-            if not is_video_file(full):
-                continue
-            if re.search(r"_loudnorm($|_)", Path(full).stem, re.IGNORECASE):
-                continue
+        probe_path = ""
+        try:
+            fd, probe_path = tempfile.mkstemp(prefix=".write_test_", suffix=".tmp", dir=custom_dir)
+            os.close(fd)
+            with open(probe_path, "w", encoding="utf-8") as f:
+                f.write("ok")
+        except Exception as e:
+            raise RuntimeError(f"Temp work dir is not writable: {custom_dir}") from e
+        finally:
+            if probe_path:
+                try:
+                    os.remove(probe_path)
+                except FileNotFoundError:
+                    pass
+                except Exception:
+                    pass
 
-            key = os.path.normcase(full)
-            if key in existing:
-                continue
-
-            self.file_list.append(full)
-            existing.add(key)
-            added += 1
-
-        self.file_list.sort(key=lambda x: x.lower())
-        self.refresh_file_listbox()
-        self.schedule_audio_preview_refresh(force_probe=True)
-        return added
-
-    def refresh_file_listbox(self):
-        self.file_listbox.delete(0, tk.END)
-        for p in self.file_list:
-            self.file_listbox.insert(tk.END, p)
-        if self.get_lang_code() == "en":
-            self.file_count_var.set(f"{len(self.file_list)} files")
-        else:
-            self.file_count_var.set(f"{len(self.file_list)} Dateien")
-        if self.file_list:
-            self.file_listbox.selection_clear(0, tk.END)
-            self.file_listbox.selection_set(0)
-            self.file_listbox.activate(0)
-
-    def remove_selected_files(self):
-        selection = list(self.file_listbox.curselection())
-        if not selection:
-            return
-        selected_paths = {self.file_listbox.get(i) for i in selection}
-        self.file_list = [p for p in self.file_list if p not in selected_paths]
-        self.refresh_file_listbox()
-        self.schedule_audio_preview_refresh(force_probe=True)
-
-    def clear_file_list(self):
-        self.file_list = []
-        self.refresh_file_listbox()
-        self.schedule_audio_preview_refresh(force_probe=True)
-
-    def log(self, text: str):
-        self.log_text.config(state="normal")
-        self.log_text.insert("end", text + "\n")
-        self.log_text.see("end")
-        self.log_text.config(state="disabled")
-        self.root.update_idletasks()
-
-    def update_tool_labels(self):
-        self.ffmpeg_used_var.set(self.ffmpeg_path or self.not_found_text())
-        self.ffprobe_used_var.set(self.ffprobe_path or self.not_found_text())
-
-    def on_audio_codec_changed(self):
-        self.update_audio_bitrate_ui()
-
-    def on_video_changed(self):
-        self.update_parallel_ui()
-        self.update_video_options_ui()
-        self.update_job_rows_visibility()
-        self.schedule_audio_preview_refresh()
-
-    def on_jobs_changed(self):
-        self.update_parallel_ui()
-        self.update_job_rows_visibility()
-        self.schedule_audio_preview_refresh()
-
-    def on_audio_track_mode_changed(self):
-        self.update_audio_track_mode_hint()
-        self.schedule_audio_preview_refresh()
-
-    def detect_auto_parallel_jobs(self) -> int:
-        cpu_count = os.cpu_count() or 4
-        if self.video_var.get() == "HEVC NVENC":
-            return max(2, min(4, cpu_count // 4 or 2))
-        return max(2, min(MAX_JOB_ROWS, cpu_count // 2 or 2))
-
-    def update_parallel_hint(self):
-        cpu_count = os.cpu_count() or 4
-        auto_copy = max(2, min(MAX_JOB_ROWS, cpu_count // 2 or 2))
-        auto_nvenc_encode = max(2, min(4, cpu_count // 4 or 2))
-        auto_nvenc_analysis = max(3, min(MAX_JOB_ROWS, cpu_count // 2 or 3))
-
-        current = self.jobs_var.get().strip()
-        if current.lower() == "auto":
-            effective = self.get_parallel_jobs()
-            if self.video_var.get() == "HEVC NVENC":
-                self.parallel_hint_var.set(
-                    self.msg("parallel_auto_analysis_encode", analysis=auto_nvenc_analysis, encode=effective, copy=auto_copy, nvenc=auto_nvenc_encode)
-                )
-            else:
-                self.parallel_hint_var.set(
-                    self.msg("parallel_auto_copy_nvenc", jobs=effective, copy=auto_copy, nvenc=auto_nvenc_encode)
-                )
-        else:
-            self.parallel_hint_var.set(
-                self.msg("parallel_manual_copy_nvenc", jobs=current, copy=auto_copy, nvenc=auto_nvenc_encode)
-            )
-
-    def update_parallel_ui(self):
-        current = self.jobs_var.get().strip()
-        valid_values = {"Auto", "1", "2", "3", "4", "5", "6", "7", "8"}
-        if current not in valid_values:
-            self.jobs_var.set("Auto")
-        self.jobs_combo.config(state="readonly")
-        self.update_parallel_hint()
-
-
-    def update_audio_track_mode_hint(self):
-        key = self.get_audio_track_mode_key()
-        lang = self.get_lang_code()
-        pref_key = self.get_preferred_language_key()
-        pref_label = self.get_preferred_language_display(pref_key)
-
-        if key == "all":
-            if lang == "de":
-                text = "Hinweis: Langsamer, weil jede Audiospur analysiert und neu encodiert wird."
-                prefer_hint = f"Zusatzoption nur fuer 'Nur bevorzugte Sprache': erste passende {pref_label}-Spur nach vorne setzen und als Default markieren."
-            else:
-                text = "Hint: Slower because every audio track is analyzed and re-encoded."
-                prefer_hint = f"Extra option only for 'Preferred language only': move the first matching {pref_label} track to the front and mark it as default."
-            self.chk_prefer_german_first.config(state="disabled")
-            self.prefer_german_first_hint_var.set(prefer_hint)
-        elif key == "preferred_only":
-            self.chk_prefer_german_first.config(state="normal")
-            if lang == "de":
-                text = f"Hinweis: Meist schneller als 'Alle Spuren'. Es werden nur Spuren in {pref_label} normalisiert, andere Spuren bleiben unveraendert."
-                prefer_hint = (
-                    f"Aktiv: Erste passende {pref_label}-Spur wird nach vorne gesetzt und als Default markiert."
-                    if self.prefer_german_first_var.get()
-                    else f"Optional: Erste passende {pref_label}-Spur automatisch nach vorne setzen und als Default markieren."
-                )
-            else:
-                text = f"Hint: Usually faster than 'All tracks'. Only {pref_label} tracks are normalized; other tracks stay unchanged."
-                prefer_hint = (
-                    f"Active: The first matching {pref_label} track is moved to the front and marked as default."
-                    if self.prefer_german_first_var.get()
-                    else f"Optional: Move the first matching {pref_label} track to the front and mark it as default."
-                )
-            self.prefer_german_first_hint_var.set(prefer_hint)
-        else:
-            self.chk_prefer_german_first.config(state="disabled")
-            if lang == "de":
-                text = f"Hinweis: Schnellste Option. Wenn eine {pref_label}-Spur erkannt wird, wird diese normalisiert, sonst die erste Audiospur. Andere Spuren bleiben unveraendert."
-                prefer_hint = f"Im Auto-Modus wird eine gefundene {pref_label}-Spur bevorzugt. Die Zusatzoption bleibt nur fuer 'Nur bevorzugte Sprache' aktiv."
-            else:
-                text = f"Hint: Fastest option. If a {pref_label} track is found, it is normalized; otherwise the first audio track is used. Other tracks stay unchanged."
-                prefer_hint = f"In auto mode a matching {pref_label} track is preferred. The extra option stays active only for 'Preferred language only'."
-            self.prefer_german_first_hint_var.set(prefer_hint)
-
-        self.audio_track_mode_hint_var.set(text)
-
-    def get_preferred_audio_stream_indices(self, audio_stream_info):
-        pref_key = self.get_preferred_language_key()
-        return [idx for idx, info in enumerate(audio_stream_info) if stream_matches_language(info, pref_key)]
+        return custom_dir
 
     def get_selected_audio_stream_indices(self, audio_stream_info):
         key = self.get_audio_track_mode_key()
@@ -2712,11 +3301,13 @@ del "%~f0"
         self.rb_files.config(state=state)
         self.chk_prefer_german_first.config(state=state)
         self.chk_resume_jobs.config(state=state)
+        self.chk_overwrite_original.config(state=state)
 
         if enabled:
             self.update_parallel_ui()
             self.update_video_options_ui()
             self.update_audio_bitrate_ui()
+            self.update_overwrite_ui()
         else:
             self.jobs_combo.config(state="disabled")
 
@@ -2748,6 +3339,7 @@ del "%~f0"
                 pass
 
     def on_close(self):
+        self.save_settings()
         self.cancel_requested = True
         self.kill_all_processes()
         self.root.destroy()
@@ -2801,26 +3393,98 @@ del "%~f0"
         if 0 <= row_index < len(self.job_rows):
             row = self.job_rows[row_index]
             pct = max(0, min(100, pct))
+            now = time.time()
+
+            if row.get("current_name") != name:
+                row["current_name"] = name
+                row["started_ts"] = now
+                row["phase_name"] = phase
+                row["phase_started_ts"] = now
+
+            if row.get("phase_name") != phase:
+                row["phase_name"] = phase
+                row["phase_started_ts"] = now
+
             row["name_label"].config(text=name)
             row["phase_label"].config(text=phase)
+            try:
+                row["progress"].stop()
+                row["progress"].configure(mode="determinate")
+            except Exception:
+                pass
             row["progress"]["value"] = pct
             row["pct_label"].config(text=f"{pct} %")
+
+            phase_started = row.get("phase_started_ts")
+            if pct < 15 or not phase_started:
+                row["eta_label"].config(text="ETA --")
+            else:
+                phase_elapsed = max(0.001, now - phase_started)
+                if phase_elapsed < 20:
+                    row["eta_label"].config(text="ETA --")
+                else:
+                    total_est = phase_elapsed / max(0.15, pct / 100.0)
+                    remaining = max(0, total_est - phase_elapsed)
+                    if remaining > 6 * 3600:
+                        row["eta_label"].config(text="ETA --")
+                    else:
+                        row["eta_label"].config(text=self.msg("eta_short", eta=format_eta_short(remaining)))
 
     def clear_job_row(self, row_index: int):
         if 0 <= row_index < len(self.job_rows):
             row = self.job_rows[row_index]
             row["name_label"].config(text=self.msg("waiting"))
             row["phase_label"].config(text="-")
+            row["eta_label"].config(text="ETA --")
+            try:
+                row["progress"].stop()
+                row["progress"].configure(mode="determinate")
+            except Exception:
+                pass
             row["progress"]["value"] = 0
             row["pct_label"].config(text="0 %")
+            row["current_name"] = ""
+            row["started_ts"] = None
+            row["phase_name"] = None
+            row["phase_started_ts"] = None
 
     def finish_job_row(self, row_index: int, name: str, result_text: str):
         if 0 <= row_index < len(self.job_rows):
             row = self.job_rows[row_index]
+            try:
+                row["progress"].stop()
+                row["progress"].configure(mode="determinate")
+            except Exception:
+                pass
             row["name_label"].config(text=name)
             row["phase_label"].config(text=result_text)
+            row["eta_label"].config(text="ETA 0s")
             row["progress"]["value"] = 100
             row["pct_label"].config(text="100 %")
+            row["current_name"] = name
+            row["phase_name"] = result_text
+
+    def start_job_row_activity(self, row_index: int, name: str, phase: str):
+        if 0 <= row_index < len(self.job_rows):
+            row = self.job_rows[row_index]
+            row["name_label"].config(text=name)
+            row["phase_label"].config(text=phase)
+            row["pct_label"].config(text="...")
+            row["eta_label"].config(text="ETA --")
+            try:
+                row["progress"].configure(mode="indeterminate")
+                row["progress"].start(10)
+            except Exception:
+                pass
+
+    def stop_job_row_activity(self, row_index: int):
+        if 0 <= row_index < len(self.job_rows):
+            row = self.job_rows[row_index]
+            try:
+                row["progress"].stop()
+                row["progress"].configure(mode="determinate")
+            except Exception:
+                pass
 
     def allocate_job_row(self, file_key: str) -> int:
         while not self.cancel_requested:
@@ -2849,7 +3513,11 @@ del "%~f0"
         proc = None
         progress_pos = 0
         progress_remainder = ""
-        last_pct = 0
+        last_pct = -1
+
+        row_index = self.active_job_map.get(file_key)
+        if row_index is not None:
+            self.ui(self.start_job_row_activity, row_index, display_name, phase_text)
 
         def reader_thread(pipe, collector):
             try:
@@ -2879,14 +3547,14 @@ del "%~f0"
                 return
 
             data = progress_remainder + chunk
-            lines = data.splitlines()
+            plines = data.splitlines()
 
             if data and not data.endswith(("\n", "\r")):
-                progress_remainder = lines.pop() if lines else data
+                progress_remainder = plines.pop() if plines else data
             else:
                 progress_remainder = ""
 
-            for line in reversed(lines):
+            for line in reversed(plines):
                 if not line.startswith("out_time_ms="):
                     continue
 
@@ -2896,13 +3564,13 @@ del "%~f0"
                 except Exception:
                     continue
 
-                if pct == last_pct:
+                if pct <= last_pct:
                     return
 
                 last_pct = pct
-                row_index = self.active_job_map.get(file_key)
-                if row_index is not None:
-                    self.ui(self.set_job_row, row_index, display_name, phase_text, pct)
+                row_index2 = self.active_job_map.get(file_key)
+                if row_index2 is not None:
+                    self.ui(self.set_job_row, row_index2, display_name, phase_text, pct)
                 return
 
         try:
@@ -2948,10 +3616,11 @@ del "%~f0"
             exit_code = proc.returncode if proc else -1
             cancelled = self.cancel_requested
 
-            if not cancelled and last_pct >= 99:
-                row_index = self.active_job_map.get(file_key)
-                if row_index is not None:
-                    self.ui(self.set_job_row, row_index, display_name, phase_text, 100)
+            row_index2 = self.active_job_map.get(file_key)
+            if row_index2 is not None:
+                self.ui(self.stop_job_row_activity, row_index2)
+                if not cancelled and last_pct >= 0:
+                    self.ui(self.set_job_row, row_index2, display_name, phase_text, max(last_pct, 99))
 
             return exit_code, "", stderr_acc, cancelled
 
@@ -2977,23 +3646,33 @@ del "%~f0"
         display_name = p.name
         item_started = item_started or time.time()
 
+        overwrite_original = bool(self.overwrite_original_var.get())
         rel_path = os.path.relpath(input_file, input_root)
         rel_dir = os.path.dirname(rel_path)
         target_dir = output_root if rel_dir in ("", ".") else os.path.join(output_root, rel_dir)
         os.makedirs(target_dir, exist_ok=True)
 
-        output_file = os.path.join(target_dir, p.stem + tag + p.suffix)
-
-        existing_candidates = [
-            os.path.join(target_dir, p.name),
-            os.path.join(target_dir, p.stem + "_loudnorm" + p.suffix),
-            os.path.join(target_dir, p.stem + "_loudnorm_nvenc" + p.suffix),
-        ]
+        if overwrite_original:
+            final_output = input_file
+            temp_work_dir = self.get_effective_temp_work_dir(input_file)
+            if not temp_work_dir or not os.path.isdir(temp_work_dir):
+                raise RuntimeError(f"Invalid temp work dir: {temp_work_dir}")
+            tmp_name = f"{p.stem}.__ln_tmp__{p.suffix}"
+            output_file = os.path.join(temp_work_dir, tmp_name)
+            existing_candidates = []
+        else:
+            final_output = os.path.join(target_dir, p.stem + tag + p.suffix)
+            output_file = final_output
+            existing_candidates = [
+                os.path.join(target_dir, p.name),
+                os.path.join(target_dir, p.stem + "_loudnorm" + p.suffix),
+                os.path.join(target_dir, p.stem + "_loudnorm_nvenc" + p.suffix),
+            ]
 
         input_base = normalize_name(p.stem)
         existing_file = next((x for x in existing_candidates if os.path.exists(x)), None)
 
-        if not existing_file and os.path.exists(target_dir):
+        if not overwrite_original and not existing_file and os.path.exists(target_dir):
             for f in os.listdir(target_dir):
                 full = os.path.join(target_dir, f)
                 if not os.path.isfile(full):
@@ -3007,7 +3686,7 @@ del "%~f0"
         if existing_file:
             return {
                 "File": input_file,
-                "Output": existing_file,
+                "Output": final_output if overwrite_original else existing_file,
                 "Status": "SKIP_EXISTS",
                 "Phase": self.msg("job_skipped"),
                 "Details": "",
@@ -3015,11 +3694,14 @@ del "%~f0"
                 "Elapsed": time.time() - item_started,
             }
 
+        if overwrite_original:
+            self.ui(self.log, f"{display_name}: overwrite mode prepared -> temp file {output_file}")
+
         audio_stream_count = get_audio_stream_count(self.ffprobe_path, input_file)
         if audio_stream_count == 0:
             return {
                 "File": input_file,
-                "Output": output_file,
+                "Output": final_output,
                 "Status": "ERROR_NO_AUDIO",
                 "Phase": "Vorbereitung",
                 "Details": "Keine Audiospur gefunden.",
@@ -3035,7 +3717,7 @@ del "%~f0"
         if not selected_audio_indices:
             return {
                 "File": input_file,
-                "Output": output_file,
+                "Output": final_output,
                 "Status": "ERROR_NO_MATCHING_AUDIO",
                 "Phase": "Vorbereitung",
                 "Details": "Keine passende Audiospur fuer den gewaehlten Modus gefunden.",
@@ -3045,7 +3727,9 @@ del "%~f0"
 
         return {
             "File": input_file,
-            "Output": output_file,
+            "Output": final_output,
+            "EncodeOutput": output_file,
+            "OverwriteOriginal": overwrite_original,
             "DisplayName": display_name,
             "ElapsedStarted": item_started,
             "AudioStreamInfo": audio_stream_info,
@@ -3099,7 +3783,7 @@ del "%~f0"
 
             for analysis_pos, stream_idx in enumerate(selected_audio_indices, start=1):
                 pass1_progress = os.path.join(tempfile.gettempdir(), f"pass1_{guid}_{stream_idx}.progress")
-                phase_text = f"Pass 1: Analyse Spur {analysis_pos}/{selected_count}"
+                phase_text = self.msg("pass1_analyze_track", current=analysis_pos, total=selected_count)
                 self.ui(self.set_job_row, row_index, display_name, phase_text, 0)
 
                 pass1_args = [
@@ -3131,14 +3815,14 @@ del "%~f0"
                 json_obj = find_loudnorm_json(pass1_err)
                 stats = parse_loudnorm_stats(json_obj)
                 if not stats:
-                    self.ui(self.set_job_row, row_index, display_name, "Pass 1 Fehler", 100)
-                    details = " | ".join((pass1_err or f"Keine loudnorm Analysewerte fuer Spur {stream_idx + 1} gefunden.").splitlines()[-12:])
+                    self.ui(self.set_job_row, row_index, display_name, self.msg("pass1_error"), 100)
+                    details = " | ".join((pass1_err or self.msg("pass1_missing_stats", track=stream_idx + 1)).splitlines()[-12:])
                     return {
                         "File": ctx["File"],
                         "Output": ctx["Output"],
                         "Status": "ERROR_PASS1",
-                        "Phase": f"Pass 1 Spur {stream_idx + 1}",
-                        "Details": details or f"Pass-1 JSON fuer Spur {stream_idx + 1} unvollstaendig.",
+                        "Phase": self.msg("pass1_phase_track", track=stream_idx + 1),
+                        "Details": details or self.msg("pass1_json_incomplete", track=stream_idx + 1),
                         "DisplayName": display_name,
                         "Elapsed": time.time() - item_started,
                     }
@@ -3148,7 +3832,7 @@ del "%~f0"
             ctx["LoudnormStats"] = loudnorm_stats
             ctx["Status"] = "ANALYZED"
             ctx["Elapsed"] = time.time() - item_started
-            self.ui(self.finish_job_row, row_index, display_name, "Analyse fertig")
+            self.ui(self.finish_job_row, row_index, display_name, self.msg("analysis_finished"))
             return ctx
         finally:
             time.sleep(0.1)
@@ -3174,7 +3858,7 @@ del "%~f0"
 
             guid = next(tempfile._get_candidate_names())
             pass2_progress = os.path.join(tempfile.gettempdir(), f"pass2_{guid}.progress")
-            self.ui(self.set_job_row, row_index, display_name, "Pass 2: Normalisierung", 0)
+            self.ui(self.set_job_row, row_index, display_name, self.msg("pass2_normalization"), 0)
 
             filter_parts = []
             for stream_idx in ctx["SelectedAudioIndices"]:
@@ -3212,6 +3896,9 @@ del "%~f0"
             for output_audio_idx, input_audio_idx in enumerate(output_audio_order):
                 if input_audio_idx in loudnorm_stats:
                     pass2_args += [f"-c:a:{output_audio_idx}", audio_codec, f"-b:a:{output_audio_idx}", audio_bitrate]
+                    sample_rate = str(audio_stream_info[input_audio_idx].get("sample_rate") or "").strip()
+                    if sample_rate.isdigit():
+                        pass2_args += [f"-ar:a:{output_audio_idx}", sample_rate]
                 else:
                     pass2_args += [f"-c:a:{output_audio_idx}", "copy"]
 
@@ -3241,13 +3928,41 @@ del "%~f0"
                 duration_seconds,
                 file_key,
                 display_name,
-                "Pass 2: Normalisierung",
+                self.msg("pass2_normalization"),
             )
             if cancelled:
+                try:
+                    encode_output = ctx.get("EncodeOutput", ctx["Output"])
+                    if ctx.get("OverwriteOriginal") and encode_output and os.path.exists(encode_output):
+                        os.remove(encode_output)
+                except Exception:
+                    pass
                 return None
 
-            success = os.path.exists(ctx["Output"]) and os.path.getsize(ctx["Output"]) > 1024 * 1024
+            encode_output = ctx.get("EncodeOutput", ctx["Output"])
+            success = os.path.exists(encode_output) and os.path.getsize(encode_output) > 1024 * 1024
             if success:
+                if ctx.get("OverwriteOriginal"):
+                    try:
+                        self.replace_original_file(encode_output, ctx["Output"], preserve_timestamp=bool(self.preserve_timestamp_var.get()))
+                        self.ui(self.log, f"{display_name}: {self.msg('overwrite_done')}")
+                    except Exception as e:
+                        try:
+                            if os.path.exists(encode_output):
+                                os.remove(encode_output)
+                        except Exception:
+                            pass
+                        self.ui(self.set_job_row, row_index, display_name, self.msg("replace_failed", error=str(e)), 100)
+                        return {
+                            "File": ctx["File"],
+                            "Output": ctx["Output"],
+                            "Status": "ERROR_REPLACE",
+                            "Phase": self.msg("job_done"),
+                            "Details": self.msg("replace_failed", error=str(e)),
+                            "DisplayName": display_name,
+                            "Elapsed": time.time() - item_started,
+                        }
+
                 self.ui(self.finish_job_row, row_index, display_name, self.msg("job_done"))
                 return {
                     "File": ctx["File"],
@@ -3260,6 +3975,11 @@ del "%~f0"
                 }
 
             self.ui(self.set_job_row, row_index, display_name, "Pass 2 Fehler", 100)
+            try:
+                if ctx.get("OverwriteOriginal") and os.path.exists(ctx.get("EncodeOutput", "")):
+                    os.remove(ctx.get("EncodeOutput", ""))
+            except Exception:
+                pass
             details = " | ".join((pass2_err or "FFmpeg Pass 2 fehlgeschlagen.").splitlines()[-12:])
             return {
                 "File": ctx["File"],
@@ -3291,23 +4011,34 @@ del "%~f0"
         try:
             self.ui(self.set_job_row, row_index, display_name, "Vorbereitung", 0)
 
+            overwrite_original = bool(self.overwrite_original_var.get())
+    
             rel_path = os.path.relpath(input_file, input_root)
             rel_dir = os.path.dirname(rel_path)
             target_dir = output_root if rel_dir in ("", ".") else os.path.join(output_root, rel_dir)
             os.makedirs(target_dir, exist_ok=True)
 
-            output_file = os.path.join(target_dir, p.stem + tag + p.suffix)
-
-            existing_candidates = [
-                os.path.join(target_dir, p.name),
-                os.path.join(target_dir, p.stem + "_loudnorm" + p.suffix),
-                os.path.join(target_dir, p.stem + "_loudnorm_nvenc" + p.suffix),
-            ]
+            if overwrite_original:
+                final_output = input_file
+                temp_work_dir = self.get_effective_temp_work_dir(input_file)
+                if not temp_work_dir or not os.path.isdir(temp_work_dir):
+                    raise RuntimeError(f"Invalid temp work dir: {temp_work_dir}")
+                tmp_name = f"{p.stem}.__ln_tmp__{p.suffix}"
+                output_file = os.path.join(temp_work_dir, tmp_name)
+                existing_candidates = []
+            else:
+                final_output = os.path.join(target_dir, p.stem + tag + p.suffix)
+                output_file = final_output
+                existing_candidates = [
+                    os.path.join(target_dir, p.name),
+                    os.path.join(target_dir, p.stem + "_loudnorm" + p.suffix),
+                    os.path.join(target_dir, p.stem + "_loudnorm_nvenc" + p.suffix),
+                ]
 
             input_base = normalize_name(p.stem)
             existing_file = next((x for x in existing_candidates if os.path.exists(x)), None)
 
-            if not existing_file and os.path.exists(target_dir):
+            if not overwrite_original and not existing_file and os.path.exists(target_dir):
                 for f in os.listdir(target_dir):
                     full = os.path.join(target_dir, f)
                     if not os.path.isfile(full):
@@ -3322,7 +4053,7 @@ del "%~f0"
                 self.ui(self.finish_job_row, row_index, display_name, self.msg("job_skipped"))
                 return {
                     "File": input_file,
-                    "Output": existing_file,
+                    "Output": final_output if overwrite_original else existing_file,
                     "Status": "SKIP_EXISTS",
                     "Phase": self.msg("job_skipped"),
                     "Details": "",
@@ -3330,12 +4061,15 @@ del "%~f0"
                     "Elapsed": time.time() - item_started,
                 }
 
+            if overwrite_original:
+                self.ui(self.log, f"{display_name}: overwrite mode -> temp file {output_file}")
+
             audio_stream_count = get_audio_stream_count(self.ffprobe_path, input_file)
             if audio_stream_count == 0:
                 self.ui(self.set_job_row, row_index, display_name, "Keine Audiospur", 100)
                 return {
                     "File": input_file,
-                    "Output": output_file,
+                    "Output": final_output,
                     "Status": "ERROR_NO_AUDIO",
                     "Phase": "Vorbereitung",
                     "Details": "Keine Audiospur gefunden.",
@@ -3352,7 +4086,7 @@ del "%~f0"
                 self.ui(self.set_job_row, row_index, display_name, "Keine passende Audiospur", 100)
                 return {
                     "File": input_file,
-                    "Output": output_file,
+                    "Output": final_output,
                     "Status": "ERROR_NO_MATCHING_AUDIO",
                     "Phase": "Vorbereitung",
                     "Details": "Keine passende Audiospur fuer den gewaehlten Modus gefunden.",
@@ -3380,7 +4114,7 @@ del "%~f0"
 
             for analysis_pos, stream_idx in enumerate(selected_audio_indices, start=1):
                 pass1_progress = os.path.join(tempfile.gettempdir(), f"pass1_{guid}_{stream_idx}.progress")
-                phase_text = f"Pass 1: Analyse Spur {analysis_pos}/{selected_count}"
+                phase_text = self.msg("pass1_analyze_track", current=analysis_pos, total=selected_count)
                 self.ui(self.set_job_row, row_index, display_name, phase_text, 0)
 
                 pass1_args = [
@@ -3413,21 +4147,21 @@ del "%~f0"
                 stats = parse_loudnorm_stats(json_obj)
 
                 if not stats:
-                    self.ui(self.set_job_row, row_index, display_name, "Pass 1 Fehler", 100)
-                    details = " | ".join((pass1_err or f"Keine loudnorm Analysewerte fuer Spur {stream_idx + 1} gefunden.").splitlines()[-12:])
+                    self.ui(self.set_job_row, row_index, display_name, self.msg("pass1_error"), 100)
+                    details = " | ".join((pass1_err or self.msg("pass1_missing_stats", track=stream_idx + 1)).splitlines()[-12:])
                     return {
                         "File": input_file,
                         "Output": output_file,
                         "Status": "ERROR_PASS1",
-                        "Phase": f"Pass 1 Spur {stream_idx + 1}",
-                        "Details": details or f"Pass-1 JSON fuer Spur {stream_idx + 1} unvollstaendig.",
+                        "Phase": self.msg("pass1_phase_track", track=stream_idx + 1),
+                        "Details": details or self.msg("pass1_json_incomplete", track=stream_idx + 1),
                         "DisplayName": display_name,
                         "Elapsed": time.time() - item_started,
                     }
 
                 loudnorm_stats[stream_idx] = stats
 
-            self.ui(self.set_job_row, row_index, display_name, "Pass 2: Normalisierung", 0)
+            self.ui(self.set_job_row, row_index, display_name, self.msg("pass2_normalization"), 0)
 
             filter_parts = []
             for stream_idx in selected_audio_indices:
@@ -3506,18 +4240,43 @@ del "%~f0"
                 duration_seconds,
                 file_key,
                 display_name,
-                "Pass 2: Normalisierung",
+                self.msg("pass2_normalization"),
             )
             if cancelled:
+                try:
+                    if overwrite_original and output_file and os.path.exists(output_file):
+                        os.remove(output_file)
+                except Exception:
+                    pass
                 return None
 
             success = os.path.exists(output_file) and os.path.getsize(output_file) > 1024 * 1024
 
             if success:
+                if overwrite_original:
+                    try:
+                        self.replace_original_file(output_file, final_output, preserve_timestamp=bool(self.preserve_timestamp_var.get()))
+                    except Exception as e:
+                        try:
+                            if os.path.exists(output_file):
+                                os.remove(output_file)
+                        except Exception:
+                            pass
+                        self.ui(self.set_job_row, row_index, display_name, self.msg("replace_failed", error=str(e)), 100)
+                        return {
+                            "File": input_file,
+                            "Output": final_output,
+                            "Status": "ERROR_REPLACE",
+                            "Phase": "Pass 2",
+                            "Details": self.msg("replace_failed", error=str(e)),
+                            "DisplayName": display_name,
+                            "Elapsed": time.time() - item_started,
+                        }
+
                 self.ui(self.finish_job_row, row_index, display_name, self.msg("job_done"))
                 return {
                     "File": input_file,
-                    "Output": output_file,
+                    "Output": final_output if overwrite_original else output_file,
                     "Status": "OK",
                     "Phase": "Pass 2",
                     "Details": "",
@@ -3542,7 +4301,7 @@ del "%~f0"
 
 
     def get_resume_state_path(self, output_root: str) -> str:
-        return os.path.join(output_root, RESUME_STATE_FILE)
+        return os.path.join(self.get_effective_temp_work_dir(), RESUME_STATE_FILE)
 
     def load_resume_state(self, output_root: str):
         path = self.get_resume_state_path(output_root)
@@ -3564,8 +4323,8 @@ del "%~f0"
 
     def append_resume_state(self, output_root: str, result: dict):
         try:
-            os.makedirs(output_root, exist_ok=True)
             path = self.get_resume_state_path(output_root)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             exists = os.path.exists(path)
 
             with open(path, "a", newline="", encoding="utf-8") as f:
@@ -3672,10 +4431,13 @@ del "%~f0"
                 return
 
             output_root = self.output_var.get().strip()
-            if not output_root:
+            if not self.overwrite_original_var.get() and not output_root:
                 self.ui(messagebox.showerror, "Fehler", "Bitte Ausgabeordner angeben.")
                 return
 
+            if self.overwrite_original_var.get():
+                self.get_effective_temp_work_dir()
+                output_root = output_root or input_root
             os.makedirs(output_root, exist_ok=True)
             files, resume_skipped = self.filter_files_for_resume(files, output_root)
 
@@ -3727,6 +4489,7 @@ del "%~f0"
             self.ui(self.log, f"ffmpeg   : {self.ffmpeg_path}")
             self.ui(self.log, f"ffprobe  : {self.ffprobe_path}")
             self.ui(self.log, f"Resume   : {('aktiv' if self.resume_jobs_var.get() else 'aus') if lang == 'de' else ('on' if self.resume_jobs_var.get() else 'off')}")
+            self.ui(self.log, f"{'Overwrite' if lang == 'en' else 'Overwrite'}: " + ("on" if self.overwrite_original_var.get() else "off"))
             self.ui(self.log, "")
 
             total = len(files)
@@ -3823,7 +4586,7 @@ del "%~f0"
                 self.ui(self.log, self.msg("processing_aborted"))
                 return
 
-            log_file = os.path.join(output_root, "loudnorm_log.csv")
+            log_file = os.path.join(get_data_dir(), "loudnorm_log.csv")
             with open(log_file, "w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=["File", "Output", "Status", "Phase", "Details"])
                 writer.writeheader()
@@ -3898,7 +4661,213 @@ del "%~f0"
         self.worker_thread.start()
 
 
+
+    def browse_temp_work_dir(self):
+        start_dir = sanitize_windows_config_path(self.temp_work_dir_var.get()) or self.output_var.get().strip() or get_app_dir()
+        selected = filedialog.askdirectory(initialdir=start_dir)
+        if selected:
+            self.temp_work_dir_var.set(sanitize_windows_config_path(selected))
+            self.save_settings()
+
+    def clear_temp_work_dir(self):
+        self.temp_work_dir_var.set("")
+        self.save_settings()
+
+    def browse_output(self):
+        start_dir = self.output_var.get().strip()
+        if not start_dir or not os.path.isdir(start_dir):
+            start_dir = get_app_dir()
+        path = filedialog.askdirectory(initialdir=start_dir)
+        if path:
+            self.output_var.set(path)
+
+    def add_files_dialog(self):
+        files = filedialog.askopenfilenames(
+            title=self.msg("select_video_files_title"),
+            filetypes=[("Video", "*.mkv *.mp4 *.avi *.mov *.m4v *.ts"), ("Alle Dateien", "*.*")],
+        )
+        if files:
+            added = self.add_files_to_list(files)
+            self.log(self.msg("files_added", count=added))
+
+    def add_folder_dialog(self):
+        folder = filedialog.askdirectory(title=self.msg("select_folder_title"))
+        if folder:
+            files = collect_videos_from_folder(folder)
+            added = self.add_files_to_list(files)
+            self.log(self.msg("files_added_from_folder", count=added))
+
+    def add_files_to_list(self, files):
+        existing = {os.path.normcase(os.path.abspath(p)) for p in self.file_list}
+        added = 0
+
+        for f in files:
+            if not f:
+                continue
+            full = os.path.abspath(f)
+            if not os.path.isfile(full):
+                continue
+            if not is_video_file(full):
+                continue
+            if re.search(r"_loudnorm($|_)", Path(full).stem, re.IGNORECASE):
+                continue
+
+            key = os.path.normcase(full)
+            if key in existing:
+                continue
+
+            self.file_list.append(full)
+            existing.add(key)
+            added += 1
+
+        self.file_list.sort(key=lambda x: x.lower())
+        self.refresh_file_listbox()
+        self.schedule_audio_preview_refresh(force_probe=True)
+        return added
+
+    def refresh_file_listbox(self):
+        self.file_listbox.delete(0, tk.END)
+        for p in self.file_list:
+            self.file_listbox.insert(tk.END, p)
+        if self.get_lang_code() == "en":
+            self.file_count_var.set(f"{len(self.file_list)} files")
+        else:
+            self.file_count_var.set(f"{len(self.file_list)} Dateien")
+        if self.file_list:
+            self.file_listbox.selection_clear(0, tk.END)
+            self.file_listbox.selection_set(0)
+            self.file_listbox.activate(0)
+
+    def remove_selected_files(self):
+        selection = list(self.file_listbox.curselection())
+        if not selection:
+            return
+        selected_paths = {self.file_listbox.get(i) for i in selection}
+        self.file_list = [p for p in self.file_list if p not in selected_paths]
+        self.refresh_file_listbox()
+        self.schedule_audio_preview_refresh(force_probe=True)
+
+    def clear_file_list(self):
+        self.file_list = []
+        self.refresh_file_listbox()
+        self.schedule_audio_preview_refresh(force_probe=True)
+
+    def log(self, text: str):
+        self.log_text.config(state="normal")
+        self.log_text.insert("end", text + "\n")
+        self.log_text.see("end")
+        self.log_text.config(state="disabled")
+        self.root.update_idletasks()
+
+    def update_tool_labels(self):
+        self.ffmpeg_used_var.set(self.ffmpeg_path or self.not_found_text())
+        self.ffprobe_used_var.set(self.ffprobe_path or self.not_found_text())
+
+    def on_audio_codec_changed(self):
+        self.update_audio_bitrate_ui()
+
+    def on_video_changed(self):
+        self.update_parallel_ui()
+        self.update_video_options_ui()
+        self.update_job_rows_visibility()
+        self.schedule_audio_preview_refresh()
+
+    def on_jobs_changed(self):
+        self.update_parallel_ui()
+        self.update_job_rows_visibility()
+        self.schedule_audio_preview_refresh()
+
+    def on_audio_track_mode_changed(self):
+        self.update_audio_track_mode_hint()
+        self.schedule_audio_preview_refresh()
+
+    def detect_auto_parallel_jobs(self) -> int:
+        cpu_count = os.cpu_count() or 4
+        if self.video_var.get() == "HEVC NVENC":
+            return max(2, min(4, cpu_count // 4 or 2))
+        return max(2, min(MAX_JOB_ROWS, cpu_count // 2 or 2))
+
+    def update_parallel_hint(self):
+        cpu_count = os.cpu_count() or 4
+        auto_copy = max(2, min(MAX_JOB_ROWS, cpu_count // 2 or 2))
+        auto_nvenc_encode = max(2, min(4, cpu_count // 4 or 2))
+        auto_nvenc_analysis = max(3, min(MAX_JOB_ROWS, cpu_count // 2 or 3))
+
+        current = self.jobs_var.get().strip()
+        if current.lower() == "auto":
+            effective = self.get_parallel_jobs()
+            if self.video_var.get() == "HEVC NVENC":
+                self.parallel_hint_var.set(
+                    self.msg("parallel_auto_analysis_encode", analysis=auto_nvenc_analysis, encode=effective, copy=auto_copy, nvenc=auto_nvenc_encode)
+                )
+            else:
+                self.parallel_hint_var.set(
+                    self.msg("parallel_auto_copy_nvenc", jobs=effective, copy=auto_copy, nvenc=auto_nvenc_encode)
+                )
+        else:
+            self.parallel_hint_var.set(
+                self.msg("parallel_manual_copy_nvenc", jobs=current, copy=auto_copy, nvenc=auto_nvenc_encode)
+            )
+
+    def update_parallel_ui(self):
+        current = self.jobs_var.get().strip()
+        valid_values = {"Auto", "1", "2", "3", "4", "5", "6", "7", "8"}
+        if current not in valid_values:
+            self.jobs_var.set("Auto")
+        self.jobs_combo.config(state="readonly")
+        self.update_parallel_hint()
+
+    def update_audio_track_mode_hint(self):
+        key = self.get_audio_track_mode_key()
+        lang = self.get_lang_code()
+        pref_key = self.get_preferred_language_key()
+        pref_label = self.get_preferred_language_display(pref_key)
+
+        if key == "all":
+            if lang == "de":
+                text = "Hinweis: Langsamer, weil jede Audiospur analysiert und neu encodiert wird."
+                prefer_hint = f"Zusatzoption nur fuer 'Nur bevorzugte Sprache': erste passende {pref_label}-Spur nach vorne setzen und als Default markieren."
+            else:
+                text = "Hint: Slower because every audio track is analyzed and re-encoded."
+                prefer_hint = f"Extra option only for 'Preferred language only': move the first matching {pref_label} track to the front and mark it as default."
+            self.chk_prefer_german_first.config(state="disabled")
+            self.prefer_german_first_hint_var.set(prefer_hint)
+        elif key == "preferred_only":
+            self.chk_prefer_german_first.config(state="normal")
+            if lang == "de":
+                text = f"Hinweis: Meist schneller als 'Alle Spuren'. Es werden nur Spuren in {pref_label} normalisiert, andere Spuren bleiben unveraendert."
+                prefer_hint = (
+                    f"Aktiv: Erste passende {pref_label}-Spur wird nach vorne gesetzt und als Default markiert."
+                    if self.prefer_german_first_var.get()
+                    else f"Optional: Erste passende {pref_label}-Spur automatisch nach vorne setzen und als Default markieren."
+                )
+            else:
+                text = f"Hint: Usually faster than 'All tracks'. Only {pref_label} tracks are normalized; other tracks stay unchanged."
+                prefer_hint = (
+                    f"Active: The first matching {pref_label} track is moved to the front and marked as default."
+                    if self.prefer_german_first_var.get()
+                    else f"Optional: Move the first matching {pref_label} track to the front and mark it as default."
+                )
+            self.prefer_german_first_hint_var.set(prefer_hint)
+        else:
+            self.chk_prefer_german_first.config(state="disabled")
+            if lang == "de":
+                text = f"Hinweis: Schnellste Option. Wenn eine {pref_label}-Spur erkannt wird, wird diese normalisiert, sonst die erste Audiospur. Andere Spuren bleiben unveraendert."
+                prefer_hint = f"Im Auto-Modus wird eine gefundene {pref_label}-Spur bevorzugt. Die Zusatzoption bleibt nur fuer 'Nur bevorzugte Sprache' aktiv."
+            else:
+                text = f"Hint: Fastest option. If a {pref_label} track is found, it is normalized; otherwise the first audio track is used. Other tracks stay unchanged."
+                prefer_hint = f"In auto mode a matching {pref_label} track is preferred. The extra option stays active only for 'Preferred language only'."
+            self.prefer_german_first_hint_var.set(prefer_hint)
+
+        self.audio_track_mode_hint_var.set(text)
+
+    def get_preferred_audio_stream_indices(self, audio_stream_info):
+        pref_key = self.get_preferred_language_key()
+        return [idx for idx, info in enumerate(audio_stream_info) if stream_matches_language(info, pref_key)]
+
+
 def create_root():
+    set_windows_appusermodel_id()
     if DND_AVAILABLE:
         return TkinterDnD.Tk()
     return tk.Tk()
