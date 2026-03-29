@@ -1,2 +1,3 @@
+ffmpeg
 tk
 tkinterdnd2
